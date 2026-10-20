@@ -355,3 +355,12 @@ property-based tests: boundary values at exactly the 16,384-byte limit,
 zero-duration cliffs, `i128::MAX` rates, same-ledger transitions, oversized
 symbols, and oversized batches. The suite must pass in CI without panics or
 unexpected state mutations.
+
+## SDK error decoder (`tools/sdk/errors.ts`)
+
+`parseStreamError` and `decodeContractError` are O(1): a frozen 34-entry table,
+a bounds check against `MAX_STREAM_ERROR_CODE`, and one anchored regex over at
+most `MAX_DIAGNOSTIC_LEN` (512) bytes. No XDR is decoded or cloned and no
+storage or host calls are made, so cost per decode is constant across a batch
+payroll run. `tests/test_sdk_errors_parity.py` pins the table to
+`contracts/stream/src/error.rs`.

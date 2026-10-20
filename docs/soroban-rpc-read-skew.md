@@ -879,6 +879,24 @@ contract error (not `TRY_AGAIN_LATER`/timeout); a restore transaction reaches
 the entry may be genuinely unrecoverable, and the operator should stop the
 keeper and page the on-call engineer rather than looping.
 
+## Wallet submission recovery (`tools/sdk/wallet.ts`)
+
+`submitWithRecovery(signed, { submit, restore })` resubmits the **same signed
+XDR** on retry, so a timed-out submission that actually landed cannot apply
+twice (the duplicate sequence number is rejected). `classifyWalletFailure`
+maps errors to categories:
+
+| Kind | Meaning | Action |
+|---|---|---|
+| `archived` | persistent entry expired | run `restore()` (RestoreFootprint), back off, resubmit |
+| `read_skew` | RPC node lagging | back off, resubmit |
+| `timeout` | outcome unknown | back off, resubmit same XDR |
+| `rejected` | user declined in wallet | rethrow, never retried |
+| `fatal` | anything else | rethrow, never retried |
+
+Troubleshooting: if `submitWithRecovery` throws after `maxAttempts`, inspect the
+transaction hash on RPC before re-signing; only re-sign if the hash is unknown.
+
 ---
 
 *Written while building [Perpetua](https://github.com/hannyloveworld/Perpetua-Contracts),

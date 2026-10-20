@@ -767,3 +767,10 @@ Indexers should run the same checks in CI:
 A projection is in parity only when both scripts pass. Treat a snapshot diff
 as a schema change: update the ABI, the fixtures, and this guide together, and
 never regenerate a fixture to hide an unexplained diff.
+
+## Error code parity (`tools/sdk/errors.ts`)
+
+Indexers decode `Error(Contract, #N)` with `decodeContractError`. The table is
+frozen against `contracts/stream/src/error.rs` and the golden fixture
+`tests/fixtures/errors/stream_errors.json`; adding a discriminant requires
+updating the Rust enum, `errors.ts`, the fixture, and `docs/ABI.md` together.

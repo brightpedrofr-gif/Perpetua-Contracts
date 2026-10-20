@@ -43,10 +43,10 @@ export type StreamErrorCode =
   | 31 // InvalidTopUp
   | 32 // DepositTooSmall
   | 33 // StreamIdOverflow
-  | 34 // BatchSizeExceeded;
+  | 34; // BatchSizeExceeded
 
 /** Mapping from error discriminant to human-readable message. */
-const ERROR_MESSAGES: Record<number, string> = {
+const ERROR_MESSAGES: Readonly<Record<number, string>> = Object.freeze({
   1:  "StreamNotFound: no stream exists with the given id.",
   2:  "InvalidTimeRange: end_time must be greater than start_time.",
   3:  "InvalidCliff: cliff_time must be within [start_time, end_time].",
@@ -81,7 +81,13 @@ const ERROR_MESSAGES: Record<number, string> = {
   32: "DepositTooSmall: deposit is smaller than the stream duration in seconds.",
   33: "StreamIdOverflow: the next stream id would overflow u64.",
   34: "BatchSizeExceeded: batch size exceeds the maximum allowed.",
-};
+});
+
+/** Highest known discriminant; the table is dense over `1..=MAX_STREAM_ERROR_CODE`. */
+export const MAX_STREAM_ERROR_CODE = 34;
+
+/** Upper bound on the input length `decodeContractError` will scan (bytes). */
+export const MAX_DIAGNOSTIC_LEN = 512;
 
 /**
  * Parse a raw Perpetua stream contract error code into a human-readable
@@ -102,7 +108,7 @@ const ERROR_MESSAGES: Record<number, string> = {
  * ```
  */
 export function parseStreamError(errorCode: number): string {
-  if (Number.isInteger(errorCode) && errorCode > 0 && ERROR_MESSAGES[errorCode]) {
+  if (isKnownStreamError(errorCode)) {
     return ERROR_MESSAGES[errorCode];
   }
   return `Unknown stream error (code ${errorCode}).`;
@@ -115,5 +121,33 @@ export function parseStreamError(errorCode: number): string {
  * @returns `true` if the code is in the Perpetua stream error table.
  */
 export function isKnownStreamError(errorCode: number): boolean {
-  return Number.isInteger(errorCode) && errorCode > 0 && Boolean(ERROR_MESSAGES[errorCode]);
+  return Number.isInteger(errorCode) && errorCode >= 1 && errorCode <= MAX_STREAM_ERROR_CODE;
+}
+
+/**
+ * Extract the contract error discriminant from an RPC/CLI diagnostic string of
+ * the form `Error(Contract, #N)`.
+ *
+ * Allocation-free beyond the single regex match; inputs longer than
+ * `MAX_DIAGNOSTIC_LEN` are rejected so batch payroll runs stay bounded.
+ *
+ * @returns the discriminant, or `null` if the text carries no contract error.
+ */
+export function decodeContractError(diagnostic: string): number | null {
+  if (typeof diagnostic !== "string" || diagnostic.length > MAX_DIAGNOSTIC_LEN) {
+    return null;
+  }
+  const m = /Error\(Contract, #(\d{1,10})\)/.exec(diagnostic);
+  return m ? Number(m[1]) : null;
+}
+
+/** Decode a diagnostic string straight to a human-readable message. */
+export function describeContractError(diagnostic: string): string {
+  const code = decodeContractError(diagnostic);
+  return code === null ? "Not a contract error." : parseStreamError(code);
+}
+
+/** Frozen snapshot of the code -> message table, for parity checks. */
+export function streamErrorTable(): Readonly<Record<number, string>> {
+  return ERROR_MESSAGES;
 }

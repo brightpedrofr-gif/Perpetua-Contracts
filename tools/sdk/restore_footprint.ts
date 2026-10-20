@@ -201,6 +201,70 @@ export async function buildSignedRestoreFootprint(
   return { xdr: transaction.toXDR(), streamKey: key, transaction };
 }
 
+export interface IdempotentInvocationOptions<T> {
+  maxAttempts?: number;
+  backoffMs?: number;
+  idempotencyKey?: string;
+  isRetryableError?: (error: unknown) => boolean;
+  verifyCurrentState?: () => Promise<{ isCompleted: boolean; result?: T }>;
+}
+
+export interface IdempotentInvocationResult<T> {
+  result: T;
+  attempts: number;
+  recovered: boolean;
+}
+
+/**
+ * Executes an operation with idempotent retry semantics when recovering from
+ * failed or timed-out invocations.
+ *
+ * Before retrying, if a verifyCurrentState hook is supplied, it verifies whether
+ * the action already succeeded on-chain (e.g. during an unconfirmed RPC timeout),
+ * preventing double-execution or conflicting state transitions.
+ */
+export async function idempotentInvokeWithRecovery<T>(
+  operation: (attempt: number) => Promise<T>,
+  options: IdempotentInvocationOptions<T> = {},
+): Promise<IdempotentInvocationResult<T>> {
+  const maxAttempts = options.maxAttempts ?? 3;
+  const backoffMs = options.backoffMs ?? 1000;
+  let attempts = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    attempts = attempt;
+    try {
+      const result = await operation(attempt);
+      return { result, attempts, recovered: attempt > 1 };
+    } catch (error) {
+      if (attempt >= maxAttempts) {
+        throw error;
+      }
+
+      // Check if the operation actually took effect before the timeout/failure
+      if (options.verifyCurrentState) {
+        try {
+          const verified = await options.verifyCurrentState();
+          if (verified.isCompleted && verified.result !== undefined) {
+            return { result: verified.result, attempts, recovered: true };
+          }
+        } catch {
+          // Verification failed; proceed to backoff and retry
+        }
+      }
+
+      const shouldRetry = options.isRetryableError ? options.isRetryableError(error) : true;
+      if (!shouldRetry) {
+        throw error;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, backoffMs * attempt));
+    }
+  }
+
+  throw new Error(`Idempotent invocation failed after ${attempts} attempts`);
+}
+
 function usage(): never {
   throw new Error(
     "Usage: restore_footprint.ts --contract <C...> --stream-id <id> " +

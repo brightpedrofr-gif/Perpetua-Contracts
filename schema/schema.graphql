@@ -87,14 +87,23 @@ type ArchivedStream {
 # and docs/ABI.md. topic[0] is the snake_case struct name; stream_id is topic[1].
 # Do not reorder, remove, or retopic fields — that is a breaking V2 change.
 type StreamCreatedEvent { streamId: BigInt!, sender: Address!, recipient: Address!, token: Address!, deposited: BigInt!, startTime: BigInt!, endTime: BigInt!, cliffTime: BigInt!, cancellable: Boolean!, pausable: Boolean!, transferable: Boolean!, ledger: LedgerSeq! }
+# Emitted on Withdrawn.
 type WithdrawnEvent   { streamId: BigInt!, recipient: Address!, amount: BigInt!, withdrawn: BigInt!, deposited: BigInt!, status: StreamStatus!, ledger: LedgerSeq! }
+# Emitted on Cancelled.
 type CancelledEvent   { streamId: BigInt!, sender: Address!, recipient: Address!, refunded: BigInt!, vested: BigInt!, withdrawn: BigInt!, endTime: BigInt!, ledger: LedgerSeq! }
+# Emitted on Paused.
 type PausedEvent      { streamId: BigInt!, sender: Address!, pausedAt: BigInt!, pausedTotal: BigInt!, ledger: LedgerSeq! }
+# Emitted on Resumed.
 type ResumedEvent     { streamId: BigInt!, sender: Address!, pausedDuration: BigInt!, pausedTotal: BigInt!, ledger: LedgerSeq! }
+# Emitted on ToppedUp.
 type ToppedUpEvent    { streamId: BigInt!, sender: Address!, amount: BigInt!, deposited: BigInt!, endTime: BigInt!, ledger: LedgerSeq! }
+# Emitted on RecipientTransferred.
 type RecipientTransferredEvent { streamId: BigInt!, oldRecipient: Address!, newRecipient: Address!, ledger: LedgerSeq! }
+# Emitted on DelegateGranted.
 type DelegateGrantedEvent { streamId: BigInt!, grantor: Address!, delegate: Address!, ops: Int!, expiresAt: BigInt, ledger: LedgerSeq! }
+# Emitted on DelegateRevoked.
 type DelegateRevokedEvent { streamId: BigInt!, grantor: Address!, delegate: Address!, ledger: LedgerSeq! }
+# Emitted on TtlExtended.
 type TtlExtendedEvent { streamId: BigInt!, extendedToLedgers: BigInt!, ledger: LedgerSeq! }
 
 # Bounded pagination: `first` defaults to 100 and is capped at 1000 so batch

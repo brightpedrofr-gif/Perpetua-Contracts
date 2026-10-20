@@ -1,3 +1,4 @@
+import { describe, it, expect } from "vitest";
 import { parseStreamError, isKnownStreamError } from "./errors";
 
 describe("parseStreamError", () => {
@@ -39,7 +40,61 @@ describe("isKnownStreamError", () => {
   it("returns false for zero, negative, and out-of-range codes", () => {
     expect(isKnownStreamError(0)).toBe(false);
     expect(isKnownStreamError(-1)).toBe(false);
-    expect(isKnownStreamError(32)).toBe(false);
+    expect(isKnownStreamError(35)).toBe(false);
     expect(isKnownStreamError(NaN)).toBe(false);
+  });
+});
+
+import {
+  isArchivedEntryError,
+  isRetryableFailure,
+  isLedgerSkewed,
+  diagnoseFailure,
+  retryKey,
+} from "./errors";
+
+describe("every error code 1..34", () => {
+  it("maps each to a non-fallback message starting with its name", () => {
+    for (let c = 1; c <= 34; c++) {
+      expect(isKnownStreamError(c)).toBe(true);
+      expect(parseStreamError(c)).toMatch(/^[A-Za-z]+: /);
+    }
+    expect(isKnownStreamError(35)).toBe(false);
+    expect(isKnownStreamError(1.5)).toBe(false);
+  });
+});
+
+describe("archival / retry / skew diagnostics", () => {
+  it("detects archived entries", () => {
+    expect(isArchivedEntryError("simulation failed: entry is archived")).toBe(true);
+    expect(isArchivedEntryError("RestoreFootprint required")).toBe(true);
+    expect(isArchivedEntryError("insufficient fee")).toBe(false);
+  });
+
+  it("detects retryable failures", () => {
+    expect(isRetryableFailure("TRY_AGAIN_LATER")).toBe(true);
+    expect(isRetryableFailure("request timed out")).toBe(true);
+    expect(isRetryableFailure("Error(Contract, #7)")).toBe(false);
+  });
+
+  it("detects ledger skew at the boundary", () => {
+    expect(isLedgerSkewed(100, 100)).toBe(false);
+    expect(isLedgerSkewed(99, 100)).toBe(true);
+    expect(isLedgerSkewed(99, 100, 1)).toBe(false);
+    expect(() => isLedgerSkewed(-1, 1)).toThrow(RangeError);
+    expect(() => isLedgerSkewed(1.5, 1)).toThrow(RangeError);
+  });
+
+  it("diagnoses failures deterministically", () => {
+    expect(diagnoseFailure({ contractErrorCode: 14 }).action).toBe("escalate");
+    expect(diagnoseFailure({ message: "entry archived" }).action).toBe("restore_footprint");
+    expect(diagnoseFailure({ message: "TRY_AGAIN_LATER" }).action).toBe("retry");
+    expect(diagnoseFailure({ message: "weird" }).action).toBe("escalate");
+    expect(diagnoseFailure({}).action).toBe("none");
+  });
+
+  it("produces stable retry keys", () => {
+    expect(retryKey("C1", "withdraw", [1n, 5])).toBe("C1|withdraw|1|5");
+    expect(retryKey("C1", "withdraw", [1n, 5])).toBe(retryKey("C1", "withdraw", [1n, 5]));
   });
 });

@@ -355,3 +355,19 @@ property-based tests: boundary values at exactly the 16,384-byte limit,
 zero-duration cliffs, `i128::MAX` rates, same-ledger transitions, oversized
 symbols, and oversized batches. The suite must pass in CI without panics or
 unexpected state mutations.
+
+
+## `tools/perpetua-cli.ts` budget and invariants
+
+The CLI builders are pure, allocation-bounded, and perform no RPC or host calls: each `build*` function creates a single result object and one `bigint` (no XDR cloning). A benchmark assertion in `tools/perpetua-cli.test.ts` caps 10,000 `buildCreateOperation` calls at 2 s. The CLI adds no WASM bytes, so `script/check-stream-wasm-size.sh` is unaffected.
+
+Enforced invariants (each rejected early with a `CliInvariantError` carrying a deterministic code):
+
+| Input | Rule | Code |
+|---|---|---|
+| `durationDays` | positive safe integer | `InvalidTimeRange` |
+| `cliffDays` | within `[0, durationDays]` | `InvalidCliff` |
+| `amount` | decimal string in `(0, i128::MAX]` | `InvalidDeposit` / `InvalidAmount` |
+| deposit vs duration | `deposit >= duration seconds` | `DepositRateTooLow` |
+| `streamId` | non-negative safe integer | `MalformedStreamId` |
+| `ttlLedgers` | positive safe integer when set | `InvalidTtl` |

@@ -27,6 +27,9 @@ export interface BatchStreamLookupOptions {
   readonly streamIds: bigint[];
 }
 
+/** Hard cap on unique ids per `getLedgerEntries` call (keeps request/XDR size bounded). */
+export const MAX_BATCH_LOOKUP = 200;
+
 export interface BatchStreamLookupHealth {
   readonly status?: string;
 }
@@ -63,14 +66,23 @@ export async function batchGetStreams(
   if (!streamIds.length) {
     return new Map();
   }
+  if (streamIds.length > MAX_BATCH_LOOKUP) {
+    throw new Error(`batch too large: ${streamIds.length} > ${MAX_BATCH_LOOKUP}`);
+  }
 
   const health = await server.getHealth();
   if (health?.status && health.status !== 'healthy' && health.status !== 'start-up') {
     throw new Error(`Soroban RPC is not healthy: ${health.status}`);
   }
 
-  const uniqueIds = [...new Set(streamIds.map((id) => BigInt(id)))];
-  const keys = uniqueIds.map((streamId) => buildStreamLedgerKey(contractId, streamId));
+  const seen = new Set<bigint>();
+  const keys: xdr.LedgerKey[] = [];
+  for (const id of streamIds) {
+    const streamId = BigInt(id);
+    if (seen.has(streamId)) continue;
+    seen.add(streamId);
+    keys.push(buildStreamLedgerKey(contractId, streamId));
+  }
   const result = await server.getLedgerEntries(keys as any);
   const values = new Map<bigint, Stream>();
 

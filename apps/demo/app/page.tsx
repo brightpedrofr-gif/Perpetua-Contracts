@@ -1,11 +1,4 @@
-type Stream = {
-  id: number;
-  recipient: string;
-  deposited: number;
-  vested: number;
-  ratePerSec: number;
-  status: "active" | "paused" | "cancelled";
-};
+import { summarize, vestedPct, type DashStream as Stream } from "./streamMath";
 
 // Sample ledger — the reference UI wires this to soroban simulation once the
 // contract bindings land (stage 5/6); here it is static proof of the layout.
@@ -20,8 +13,7 @@ function fmt(n: number) {
 }
 
 export default function Dashboard() {
-  const totalVested = streams.reduce((sum, s) => sum + s.vested, 0);
-  const totalDeposited = streams.reduce((sum, s) => sum + s.deposited, 0);
+  const { active, totalVested, totalDeposited } = summarize(streams);
 
   return (
     <main className="mx-auto max-w-5xl px-6 py-12">
@@ -38,7 +30,7 @@ export default function Dashboard() {
       <section className="mt-10 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
           <p className="text-sm text-slate-400">Active streams</p>
-          <p className="mt-1 text-3xl font-semibold">{streams.filter((s) => s.status === "active").length}</p>
+          <p className="mt-1 text-3xl font-semibold">{active}</p>
         </div>
         <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
           <p className="text-sm text-slate-400">Vested</p>
@@ -59,7 +51,7 @@ export default function Dashboard() {
           <span className="col-span-2">Status</span>
         </div>
         {streams.map((s) => {
-          const pct = Math.min(100, Math.round((s.vested / s.deposited) * 100));
+          const pct = vestedPct(s.vested, s.deposited);
           return (
             <div
               key={s.id}

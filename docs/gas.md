@@ -355,3 +355,32 @@ property-based tests: boundary values at exactly the 16,384-byte limit,
 zero-duration cliffs, `i128::MAX` rates, same-ledger transitions, oversized
 symbols, and oversized batches. The suite must pass in CI without panics or
 unexpected state mutations.
+
+## Dashboard and SDK client budgets (`apps/demo/app/page.tsx`, `sdk/react-hooks/src/rpc.ts`)
+
+| Path | Bound | Enforced by |
+|---|---|---|
+| `batchGetStreams` unique ids per call | `MAX_BATCH_LOOKUP = 200` | `rpc.test.ts` |
+| `batchGetStreams` RPC calls per batch | 1 `getHealth` + 1 `getLedgerEntries` | `rpc.test.ts` |
+| Dashboard rows per render | `MAX_STREAMS = 1000`, single aggregation pass | `streamMath.test.ts` |
+
+`rpc.ts` dedupes ids in a single loop (no intermediate arrays) and rejects oversized batches
+before any network call. These are off-chain TypeScript paths; the contract WASM size budget
+(`script/check-stream-wasm-size.sh`) is unaffected.
+
+### Dashboard invariants (`apps/demo/app/streamMath.ts`)
+
+Checked before render, with deterministic codes and no silent clamping: `ZERO_DEPOSIT`,
+`NEGATIVE_VALUE`, `NON_FINITE`, `VESTED_EXCEEDS_DEPOSIT`, `UNSAFE_INTEGER` (values and the
+aggregate beyond `Number.MAX_SAFE_INTEGER`, e.g. `i128::MAX`-scale amounts), and
+`BATCH_TOO_LARGE`. `vestedPct` returns 0 for a zero deposit instead of `NaN`.
+
+### `useStream` usage and troubleshooting
+
+```tsx
+const { stream, loading, error, refresh } = useStream(42n, { refreshIntervalMs: 5000 });
+```
+
+- `usePerpetua requires a <PerpetuaProvider> ancestor`: wrap the app in `PerpetuaProvider`.
+- Stuck `loading`: `enabled: false` suspends fetching; concurrent `refresh()` calls are dropped.
+- `error` is always an `Error` and clears on the next successful fetch.

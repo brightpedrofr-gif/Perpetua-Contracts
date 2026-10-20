@@ -103,9 +103,7 @@ struct Stream {
     start_time: u64,       // unix seconds
     end_time: u64,         // unix seconds
     cliff_time: u64,       // in [start_time, end_time]; == start_time for none
-    cancellable: bool,     // immutable after creation
-    pausable: bool,        // immutable after creation
-    transferable: bool,    // immutable after creation
+    flags: u32,            // immutable bitmask: CANCELLABLE=1, PAUSABLE=2, TRANSFERABLE=4
     paused_at: Option<u64>,
     paused_total: u64,     // cumulative paused seconds, excluding any in-progress pause
     status: StreamStatus,

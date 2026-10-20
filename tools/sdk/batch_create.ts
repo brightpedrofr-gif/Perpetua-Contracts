@@ -171,3 +171,111 @@ export function buildBatchCreateTransaction(
     operations,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Fault recovery: archival, RPC read skew, idempotent retry
+// ---------------------------------------------------------------------------
+
+export type SubmitStatus = "SUCCESS" | "FAILED" | "TIMEOUT" | "TRY_AGAIN_LATER" | "ARCHIVED";
+
+export interface SubmitOutcome {
+  status: SubmitStatus;
+  ledger?: number;
+}
+
+export interface StreamCountRead {
+  streamCount: bigint;
+  /** Latest ledger the RPC node had applied when serving this read. */
+  ledger: number;
+}
+
+export interface RecoveryDeps {
+  /** Submit the (byte-identical) batch transaction. */
+  submit: () => Promise<SubmitOutcome>;
+  /** Read `stream_count()`; used to detect whether a timed-out submit landed. */
+  readStreamCount: () => Promise<StreamCountRead>;
+  /** Submit a RestoreFootprint transaction for archived entries (idempotent). */
+  restore: () => Promise<void>;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export interface RecoveryOptions {
+  maxAttempts?: number;
+  backoffMs?: number;
+  /** Max reads while waiting for a lagging RPC node to reach the submit ledger. */
+  maxSkewReads?: number;
+}
+
+export interface RecoveryResult {
+  attempts: number;
+  restored: boolean;
+  /** True when a timed-out/retried submit was found to have already landed. */
+  alreadyLanded: boolean;
+}
+
+/**
+ * Submit a batch with deterministic recovery.
+ *
+ * - `ARCHIVED`: restore the footprint, then retry the same transaction.
+ * - `TIMEOUT` / `TRY_AGAIN_LATER`: never blind-resubmit. Compare `stream_count`
+ *   with the pre-submit baseline (reads behind a lagging node are rejected until
+ *   `ledger >= minLedger`). A delta equal to the batch size means it landed; a
+ *   zero delta means it is safe to resubmit; anything else is a partial/foreign
+ *   write and throws rather than risking duplicate streams.
+ */
+export async function submitBatchWithRecovery(
+  batchSize: number,
+  deps: RecoveryDeps,
+  options: RecoveryOptions = {},
+): Promise<RecoveryResult> {
+  if (!Number.isSafeInteger(batchSize) || batchSize <= 0 || batchSize > MAX_BATCH_SIZE) {
+    throw new Error(`batchSize must be between 1 and MAX_BATCH_SIZE (${MAX_BATCH_SIZE})`);
+  }
+  const maxAttempts = options.maxAttempts ?? 3;
+  const backoffMs = options.backoffMs ?? 1000;
+  const maxSkewReads = options.maxSkewReads ?? 5;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+
+  const baseline = (await deps.readStreamCount()).streamCount;
+  let restored = false;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const outcome = await deps.submit();
+    if (outcome.status === "SUCCESS") {
+      return { attempts: attempt, restored, alreadyLanded: false };
+    }
+    if (outcome.status === "FAILED") {
+      throw new Error("Batch transaction failed on chain; not retrying");
+    }
+    if (outcome.status === "ARCHIVED") {
+      await deps.restore();
+      restored = true;
+      continue;
+    }
+
+    // TIMEOUT / TRY_AGAIN_LATER: determine whether the batch landed.
+    const minLedger = outcome.ledger ?? 0;
+    let read = await deps.readStreamCount();
+    for (let i = 0; read.ledger < minLedger && i < maxSkewReads; i++) {
+      await sleep(backoffMs);
+      read = await deps.readStreamCount();
+    }
+    if (read.ledger < minLedger) {
+      throw new Error(
+        `RPC read skew: node at ledger ${read.ledger} is behind ledger ${minLedger}; cannot confirm batch state`,
+      );
+    }
+    const delta = read.streamCount - baseline;
+    if (delta === BigInt(batchSize)) {
+      return { attempts: attempt, restored, alreadyLanded: true };
+    }
+    if (delta !== 0n) {
+      throw new Error(
+        `Unexpected stream_count delta ${delta} for batch of ${batchSize}; manual reconciliation required`,
+      );
+    }
+    await sleep(backoffMs * attempt);
+  }
+
+  throw new Error(`Batch not confirmed after ${maxAttempts} attempts`);
+}

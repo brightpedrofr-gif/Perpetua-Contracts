@@ -361,9 +361,29 @@ def check_error_alignment() -> bool:
         print("WARNING: No error variants found in source")
         return True
 
-    missing = [v for v in variants if v not in doc]
+    problems = []
+    for name, num in variants.items():
+        if not re.search(rf"\|\s*{num}\s*\|\s*`{name}`", doc):
+            problems.append(f"{num} {name}")
+    if problems:
+        print(f"FAIL: error.md out of sync with error.rs: {problems}")
+        return False
+    return True
+
+
+def check_batch_create_docs() -> bool:
+    """Every exported function/constant of tools/sdk/batch_create.ts must be in docs/batch_create.md."""
+    ts = REPO_ROOT / "tools" / "sdk" / "batch_create.ts"
+    md = REPO_ROOT / "docs" / "batch_create.md"
+    if not ts.exists() or not md.exists():
+        print(f"FAIL: {ts} or {md} missing")
+        return False
+    names = re.findall(r"^export (?:async )?(?:function|const) (\w+)", ts.read_text(encoding="utf-8"), re.M)
+    doc = md.read_text(encoding="utf-8")
+    missing = [n for n in names if n not in doc]
     if missing:
-        print(f"WARNING: {len(missing)} error variant(s) not in error.md: {missing}")
+        print(f"FAIL: docs/batch_create.md missing: {missing}")
+        return False
     return True
 
 
@@ -445,6 +465,10 @@ def main() -> int:
 
     print("Checking error.md discriminant alignment...")
     if not check_error_alignment():
+        passed = False
+
+    print("Checking docs/batch_create.md alignment...")
+    if not check_batch_create_docs():
         passed = False
 
     print("Checking script docstring/markdown alignment...")

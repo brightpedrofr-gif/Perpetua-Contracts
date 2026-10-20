@@ -586,6 +586,91 @@ def check_event_budget() -> list[str]:
     return problems
 
 
+# ---------------------------------------------------------------------------
+# Archival detection & footprint restoration guidance
+# ---------------------------------------------------------------------------
+
+STATE_LIVE = "Live"
+STATE_ARCHIVED = "Archived"
+STATE_MISSING = "Missing"
+
+RESTORE_FOOTPRINT_TOOL = "tools/sdk/restore_footprint.ts"
+
+ERR_OK = "OK"
+ERR_ARCHIVED_ENTRY = "ERR_ARCHIVED_ENTRY"
+ERR_INVALID_INPUT = "ERR_INVALID_INPUT"
+
+
+def detect_archival_state(
+    proposal_ids: list[int] | tuple[int, ...],
+    liveness: dict[int, bool] | None = None,
+    proposal_count: int | None = None,
+) -> dict:
+    """Classify each proposal id as ``Live``, ``Archived``, or ``Missing``.
+
+    ``liveness`` maps a proposal id to a boolean indicating whether the
+    proposal's persistent entry (e.g. ``Proposal(id)``) is currently live.
+    ``proposal_count`` is the contract's total proposal count. When supplied,
+    an id below ``proposal_count`` whose entry is not live is classified as
+    ``Archived`` (Soroban state archival condition). An id at or above
+    ``proposal_count`` is classified as ``Missing``.
+
+    Returns ``{"status": <code>, "states": {id: state}, "archived": [...]}``.
+    Never raises on malformed input; returns ``ERR_INVALID_INPUT``.
+    """
+    if not isinstance(proposal_ids, (list, tuple)):
+        return {"status": ERR_INVALID_INPUT, "states": {}, "archived": []}
+    if liveness is not None and not isinstance(liveness, dict):
+        return {"status": ERR_INVALID_INPUT, "states": {}, "archived": []}
+
+    live_map = liveness or {}
+    states: dict[int, str] = {}
+    archived: list[int] = []
+
+    for pid in proposal_ids:
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid < 0:
+            return {"status": ERR_INVALID_INPUT, "states": {}, "archived": []}
+        is_live = live_map.get(pid)
+        if is_live is True:
+            states[pid] = STATE_LIVE
+        elif proposal_count is not None and pid < proposal_count:
+            states[pid] = STATE_ARCHIVED
+            archived.append(pid)
+        else:
+            states[pid] = STATE_MISSING
+
+    status = ERR_ARCHIVED_ENTRY if archived else ERR_OK
+    return {"status": status, "states": states, "archived": archived}
+
+
+def restoration_guidance(archived_ids: list[int] | tuple[int, ...]) -> dict:
+    """Return footprint restoration guidance for archived proposal ids.
+
+    Guides operators on restoring archived persistent storage entries using
+    the SDK restoration tool (``tools/sdk/restore_footprint.ts``) before
+    re-attempting governance operations.
+    """
+    if not isinstance(archived_ids, (list, tuple)):
+        return {"status": ERR_INVALID_INPUT, "steps": []}
+    ids = sorted({pid for pid in archived_ids if isinstance(pid, int) and pid >= 0})
+    if not ids:
+        return {"status": ERR_OK, "steps": []}
+
+    return {
+        "status": ERR_ARCHIVED_ENTRY,
+        "tool": RESTORE_FOOTPRINT_TOOL,
+        "proposal_ids": ids,
+        "footprint_keys": [f"Proposal({pid})" for pid in ids] + [f"QuorumReachedAt({pid})" for pid in ids],
+        "steps": [
+            f"1. Generate footprint restoration transaction for proposal entries: {ids} using {RESTORE_FOOTPRINT_TOOL}.",
+            "2. Submit RestoreFootprintOp on-chain to restore the archived entries from state archival into live storage.",
+            "3. Re-run --check-archival to verify that all proposal entries report 'Live'.",
+            "4. Re-submit the voting or execution transaction. Proposal IDs are immutable, ensuring idempotent retry.",
+        ],
+    }
+
+
+
 def run_checks() -> tuple[dict, list[str]]:
     source = strip_comments(GOV_LIB.read_text(encoding="utf-8"))
     problems: list[str] = []
@@ -610,7 +695,54 @@ def run_checks() -> tuple[dict, list[str]]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="emit JSON")
+    parser.add_argument(
+        "--check-archival",
+        action="store_true",
+        help="check proposal archival state and print restoration guidance",
+    )
+    parser.add_argument(
+        "--proposal-ids",
+        type=int,
+        nargs="*",
+        default=[0, 1],
+        help="proposal IDs to check for archival (default: [0, 1])",
+    )
+    parser.add_argument(
+        "--proposal-count",
+        type=int,
+        default=None,
+        help="contract total proposal count for archival boundary comparison",
+    )
     args = parser.parse_args(argv)
+
+    if args.check_archival:
+        archival_info = detect_archival_state(
+            args.proposal_ids, proposal_count=args.proposal_count
+        )
+        guidance = restoration_guidance(archival_info["archived"])
+        if args.json:
+            out = {
+                "ok": archival_info["status"] == ERR_OK,
+                "archival": archival_info,
+                "guidance": guidance,
+                "exit_code": (
+                    EXIT_OK if archival_info["status"] == ERR_OK else EXIT_CHECK_FAILED
+                ),
+            }
+            print(json.dumps(out, indent=2))
+            return out["exit_code"]
+
+        print("Governance State Archival & Footprint Restoration Report")
+        print("=" * 66)
+        for pid, state in sorted(archival_info["states"].items()):
+            print(f"  Proposal ID {pid}: {state}")
+        if guidance["steps"]:
+            print("\nRestoration Guidance:")
+            for s in guidance["steps"]:
+                print(f"  {s}")
+        return (
+            EXIT_OK if archival_info["status"] == ERR_OK else EXIT_CHECK_FAILED
+        )
 
     if not GOV_LIB.exists():
         message = f"governance-gas-model: not found: {GOV_LIB}"

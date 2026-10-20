@@ -293,3 +293,14 @@ pub fn remove_delegate(env: &Env, stream_id: u64, delegate: &Address) {
         .persistent()
         .remove(&DataKey::Delegate(stream_id, delegate.clone()));
 }
+
+/// Archival-aware presence check: pairs [`stream_exists`] with the id counter
+/// to tell an archived entry from one that never existed.
+#[allow(dead_code)]
+pub fn stream_recovery(env: &Env, stream_id: u64) -> crate::accrual::Recovery {
+    crate::accrual::recovery_for(
+        stream_exists(env, stream_id),
+        stream_id,
+        next_stream_id(env),
+    )
+}

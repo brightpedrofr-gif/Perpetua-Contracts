@@ -13,6 +13,7 @@
 mod common;
 mod events;
 mod missing;
+mod hardening_177_181_184_190;
 
 // ABI inventory — generated from the contract spec, independent of stage.
 mod abi;

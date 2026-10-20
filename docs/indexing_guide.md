@@ -767,3 +767,14 @@ Indexers should run the same checks in CI:
 A projection is in parity only when both scripts pass. Treat a snapshot diff
 as a schema change: update the ABI, the fixtures, and this guide together, and
 never regenerate a fixture to hide an unexplained diff.
+
+## Event reconstruction rules (storage parity)
+
+* `DataKey::Stream(id)` state is reconstructed by folding events in ledger order:
+  `stream_created` seeds the record; `withdrawn` sets `withdrawn`; `topped_up`
+  raises `deposited`; `cancelled` sets `deposited = vested`; `paused`/`resumed`
+  set `paused_at`/`paused_total`.
+* A missing entry whose id is below the issued-id count is *archived*, not
+  deleted: restore the footprint before reconciling.
+* Topic layout and field order are frozen by `docs/ABI.md`; fixtures live in
+  `tests/fixtures/event_snapshots/` and are gated by `script/check_snapshot_diff.py`.

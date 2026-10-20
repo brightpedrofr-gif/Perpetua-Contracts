@@ -355,3 +355,13 @@ property-based tests: boundary values at exactly the 16,384-byte limit,
 zero-duration cliffs, `i128::MAX` rates, same-ledger transitions, oversized
 symbols, and oversized batches. The suite must pass in CI without panics or
 unexpected state mutations.
+
+## Flags and `types.rs` budget (issue #190)
+
+| Item | Bound |
+|---|---|
+| `Stream` behavior flags | 1 × `u32` (3 bits used, `flag::ALL = 0b111`) instead of 3 bools |
+| `Stream::flags_valid` / `flags_from_parts` | `const`/pure, zero host calls, zero allocations |
+| Accrual helpers (`accrual.rs`) | No storage reads or host calls; `Stream` is borrowed, never cloned |
+
+The WASM size gate `script/check-stream-wasm-size.sh` must stay green.

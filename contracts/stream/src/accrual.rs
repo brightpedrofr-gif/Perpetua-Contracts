@@ -247,3 +247,62 @@ pub fn liability(stream: &Stream) -> Result<i128, Error> {
         .checked_sub(stream.withdrawn)
         .ok_or(Error::Overflow)
 }
+
+/// Verdict on a read taken from an RPC node that may lag the ledger the
+/// caller expects. Pure so it can be tested without a host.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub enum ReadFreshness {
+    /// Observed ledger is at or past the required ledger: safe to derive from.
+    Fresh,
+    /// Observed ledger is behind: discard and re-read, never combine.
+    Stale { behind_by: u32 },
+}
+
+/// Classify a read against the ledger the caller requires (e.g. the ledger of
+/// the confirmed write it follows). Deterministic and side-effect free, so a
+/// retry after skew can never corrupt accounting: the caller simply re-reads.
+#[allow(dead_code)]
+pub fn classify_read(observed_ledger: u32, required_ledger: u32) -> ReadFreshness {
+    if observed_ledger >= required_ledger {
+        ReadFreshness::Fresh
+    } else {
+        ReadFreshness::Stale {
+            behind_by: required_ledger - observed_ledger,
+        }
+    }
+}
+
+/// What an operator or client must do when a stream entry cannot be read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub enum Recovery {
+    /// Entry is present; nothing to do.
+    None,
+    /// Id was issued but the entry is gone: restore the archived
+    /// `DataKey::Stream(id)` footprint (`RestoreFootprint`), then retry.
+    RestoreFootprint,
+    /// Id was never issued: retrying cannot help.
+    NeverExisted,
+}
+
+/// Decide the recovery path from presence and the id counter. An id below
+/// `next_stream_id` was issued, so a missing entry means archived, not absent.
+#[allow(dead_code)]
+pub fn recovery_for(present: bool, stream_id: u64, next_stream_id: u64) -> Recovery {
+    if present {
+        Recovery::None
+    } else if stream_id < next_stream_id {
+        Recovery::RestoreFootprint
+    } else {
+        Recovery::NeverExisted
+    }
+}
+
+/// Amount a retried withdraw may still pull given the amount already applied.
+/// Idempotent: replaying a request whose effect is already in `withdrawn`
+/// yields zero rather than a double payout.
+#[allow(dead_code)]
+pub fn remaining_to_apply(requested_total: i128, withdrawn: i128) -> i128 {
+    requested_total.saturating_sub(withdrawn).max(0)
+}

@@ -794,3 +794,12 @@ Indexers decode `Error(Contract, #N)` with `decodeContractError`. The table is
 frozen against `contracts/stream/src/error.rs` and the golden fixture
 `tests/fixtures/errors/stream_errors.json`; adding a discriminant requires
 updating the Rust enum, `errors.ts`, the fixture, and `docs/ABI.md` together.
+
+### CLI and `useStream` schema parity
+
+`tools/perpetua-cli.ts` (`CLI_EVENT_TOPIC_LAYOUTS`, `CLI_EVENT_PAYLOAD_SCHEMAS`)
+and `sdk/react-hooks/src/useStream.ts` consume the `Stream` mirror and the
+`withdrawn` event exactly as frozen in `docs/ABI.md` and
+`tests/fixtures/event_snapshots/withdrawn.json`. To reconstruct state, fold
+events in ledger order by `stream_id` (topic 1); a client must never apply a
+read from a ledger older than one already applied.

@@ -923,3 +923,18 @@ Pure helpers in `contracts/stream/src/accrual.rs` encode the decisions:
 lost on archival; only the accounting entry is unreadable until restored.
 Operators: run `script/archival-canary.sh` and `script/keeper-extend-ttl.sh`
 to keep entries live. Regression pins: `src/test/hardening_177_181_184_190.rs`.
+
+## Client recovery: `perpetua-cli` and `useStream`
+
+Both `tools/perpetua-cli.ts` and `sdk/react-hooks/src/useStream.ts` apply the
+same rules:
+
+- **Archived entries.** `stream_exists(id) == false && id < stream_count()`
+  means the entry is archived, not absent. Submit a `RestoreFootprint`
+  transaction for `DataKey::Stream(id)` and refresh. `useStream` exposes
+  `errorKind === 'archived'`; the CLI's `classifyFailure` returns restore guidance.
+- **Read skew.** A read from a ledger older than one already applied is
+  discarded (`isLedgerSkewed` / `isStaleRead`); the last good stream is kept.
+- **Idempotent retry.** `retryIdempotent` checks whether the invocation already
+  landed before every attempt, retries only `TRY_AGAIN_LATER`/timeouts, and
+  never retries contract errors (escalate instead).

@@ -64,6 +64,7 @@ EXIT_COULD_NOT_RUN = 2
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GOV_LIB = REPO_ROOT / "contracts" / "governance" / "src" / "lib.rs"
+DOCS_ABI = REPO_ROOT / "docs" / "ABI.md"
 
 # Soroban host limits (Protocol 27). These bound a whole transaction, not one
 # call, so they are used here as ceilings a single path must stay under.
@@ -755,6 +756,65 @@ def idempotent_retry(
         "pre_state": pre_state,
     }
 
+# ---------------------------------------------------------------------------
+# ABI Event Schema Verification
+# ---------------------------------------------------------------------------
+
+GOVERNANCE_ABI_SCHEMAS = {
+    "vote_cast": {
+        "topics": ["proposal_id", "approver"],
+        "payload": ["proposal_id", "voter", "approval_count", "timestamp"],
+    },
+    "proposal_queued": {
+        "topics": ["proposal_id"],
+        "payload": [
+            "proposal_id",
+            "quorum_reached_at",
+            "executable_after",
+            "threshold",
+        ],
+    },
+    "proposal_created": {
+        "topics": ["proposal_id", "proposer"],
+        "payload": ["proposal_id", "proposer", "target", "created_at"],
+    },
+    "proposal_executed": {
+        "topics": ["proposal_id", "executor"],
+        "payload": ["proposal_id", "executor", "target", "calldata"],
+    },
+    "proposal_cancelled": {
+        "topics": ["proposal_id", "caller"],
+        "payload": ["proposal_id", "canceller", "cancelled_at"],
+    },
+}
+
+
+def verify_governance_abi_schemas(abi_path: Path = DOCS_ABI) -> list[str]:
+    """Verify topic and data payload schemas against docs/ABI.md."""
+    if not abi_path.exists():
+        return [f"docs/ABI.md not found at {abi_path}"]
+
+    text = abi_path.read_text(encoding="utf-8")
+    problems: list[str] = []
+
+    if "## Governance Contract Events ABI" not in text:
+        problems.append("docs/ABI.md is missing the Governance Contract Events ABI section")
+        return problems
+
+    for event_name, schema in GOVERNANCE_ABI_SCHEMAS.items():
+        if f"`{event_name}`" not in text:
+            problems.append(f"event `{event_name}` missing from docs/ABI.md governance events table")
+            continue
+
+        for topic in schema["topics"]:
+            if topic not in text:
+                problems.append(f"topic `{topic}` for `{event_name}` missing from docs/ABI.md")
+
+        for field in schema["payload"]:
+            if field not in text:
+                problems.append(f"payload field `{field}` for `{event_name}` missing from docs/ABI.md")
+
+    return problems
 
 
 def run_checks() -> tuple[dict, list[str]]:
@@ -774,6 +834,7 @@ def run_checks() -> tuple[dict, list[str]]:
     problems.extend(check_duplicate_approval_is_o1(source))
     problems.extend(check_quorum_branch_is_conditional(source))
     problems.extend(check_event_budget())
+    problems.extend(verify_governance_abi_schemas())
 
     return analyse(source), problems
 

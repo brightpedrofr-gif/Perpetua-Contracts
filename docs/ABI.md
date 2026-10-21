@@ -726,10 +726,35 @@ const tx = await client.withdraw(streamId);
 console.log(`Withdrawn: ${tx.amount}`); // Successfully claims 300 tokens
 ```
 
-
 ## Invariants enforced before event emission
 
 `events::check_withdrawn_invariants` rejects a non-positive amount
 (`InvalidAmount`) or inconsistent cumulative totals (`Overflow`).
 `events::check_cancelled_invariants` enforces `refunded + vested == pre-cancel
 deposited` with checked addition. No error variant or event layout is added.
+
+---
+
+## Governance Contract Events ABI
+
+The governance contract (`contracts/governance/src/lib.rs`) emits events on proposal creation, voting, queuing, execution, and quorum administrative configuration. Topic and data payload schemas are verified against [`script/governance-gas-model.py`](../script/governance-gas-model.py):
+
+| event | topics after the name | payload |
+|---|---|---|
+| `vote_cast` | `proposal_id`, `approver` | `proposal_id`, `voter`, `approval_count`, `timestamp` |
+| `proposal_queued` | `proposal_id` | `proposal_id`, `quorum_reached_at`, `executable_after`, `threshold` |
+| `proposal_created` | `proposal_id`, `proposer` | `proposal_id`, `proposer`, `target`, `created_at` |
+| `proposal_executed` | `proposal_id`, `executor` | `proposal_id`, `executor`, `target`, `calldata` |
+| `proposal_cancelled` | `proposal_id`, `caller` | `proposal_id`, `canceller`, `cancelled_at` |
+| `admin_changed` | — | `old`, `new` |
+| `threshold_updated` | — | `old_threshold`, `new_threshold` |
+| `signer_added` | — | `signer` |
+| `signer_removed` | — | `signer` |
+| `quorum_config` | — | `threshold`, `signer_count` |
+
+### Governance event byte footprint
+
+| event | topics | data | total |
+|---|---:|---:|---:|
+| `vote_cast` | 64 | 144 | **208** |
+| `proposal_queued` | 40 | 144 | **184** |

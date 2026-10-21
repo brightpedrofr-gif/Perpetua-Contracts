@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { StrKey } from '@stellar/stellar-sdk';
-import { batchGetStreams } from './rpc.js';
+import { batchGetStreams, MAX_BATCH_LOOKUP } from './rpc.js';
 
 describe('batchGetStreams', () => {
   it('checks health, batches ledger entries, and returns a stream map', async () => {
@@ -60,5 +60,42 @@ describe('batchGetStreams', () => {
     expect(result.size).toBe(2);
     expect(result.get(7n)?.id).toBe(7n);
     expect(result.get(9n)?.id).toBe(9n);
+  });
+
+  it('dedupes ids and issues exactly one RPC call per batch', async () => {
+    const contractId = StrKey.encodeContract(new Uint8Array(32).fill(0x11));
+    const server = {
+      getHealth: vi.fn().mockResolvedValue({ status: 'healthy' }),
+      getLedgerEntries: vi.fn().mockResolvedValue({ entries: [] }),
+    };
+    await batchGetStreams(server as any, { contractId, streamIds: [1n, 1n, 2n, 2n, 2n] });
+    expect(server.getLedgerEntries).toHaveBeenCalledTimes(1);
+    expect(server.getLedgerEntries.mock.calls[0]![0]).toHaveLength(2);
+  });
+
+  it('caps batch size and rejects unhealthy RPC; empty is a no-op', async () => {
+    const contractId = StrKey.encodeContract(new Uint8Array(32).fill(0x11));
+    const server = {
+      getHealth: vi.fn().mockResolvedValue({ status: 'unhealthy' }),
+      getLedgerEntries: vi.fn(),
+    };
+    const tooMany = Array.from({ length: MAX_BATCH_LOOKUP + 1 }, (_, i) => BigInt(i));
+    await expect(batchGetStreams(server as any, { contractId, streamIds: tooMany })).rejects.toThrow(/batch too large/);
+    await expect(batchGetStreams(server as any, { contractId, streamIds: [1n] })).rejects.toThrow(/not healthy/);
+    expect((await batchGetStreams(server as any, { contractId, streamIds: [] })).size).toBe(0);
+    expect(server.getLedgerEntries).not.toHaveBeenCalled();
+  });
+
+  it('stays within the maximum batch under a time budget', async () => {
+    const contractId = StrKey.encodeContract(new Uint8Array(32).fill(0x11));
+    const server = {
+      getHealth: vi.fn().mockResolvedValue({ status: 'healthy' }),
+      getLedgerEntries: vi.fn().mockResolvedValue({ entries: [] }),
+    };
+    const ids = Array.from({ length: MAX_BATCH_LOOKUP }, (_, i) => BigInt(i));
+    const t = performance.now();
+    await batchGetStreams(server as any, { contractId, streamIds: ids });
+    expect(performance.now() - t).toBeLessThan(2000);
+    expect(server.getLedgerEntries.mock.calls[0]![0]).toHaveLength(MAX_BATCH_LOOKUP);
   });
 });

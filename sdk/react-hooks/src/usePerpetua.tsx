@@ -5,7 +5,7 @@ import {
   type PerpetuaClientOptions,
 } from './rpc.js';
 
-const PerpetuaContext = createContext<PerpetuaClient | null>(null);
+export const PerpetuaContext = createContext<PerpetuaClient | null>(null);
 
 /** Mount once near the app root to provide an RPC client to every stream hook. */
 export function PerpetuaProvider({

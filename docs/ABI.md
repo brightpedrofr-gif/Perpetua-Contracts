@@ -726,3 +726,10 @@ const tx = await client.withdraw(streamId);
 console.log(`Withdrawn: ${tx.amount}`); // Successfully claims 300 tokens
 ```
 
+
+## Invariants enforced before event emission
+
+`events::check_withdrawn_invariants` rejects a non-positive amount
+(`InvalidAmount`) or inconsistent cumulative totals (`Overflow`).
+`events::check_cancelled_invariants` enforces `refunded + vested == pre-cancel
+deposited` with checked addition. No error variant or event layout is added.

@@ -889,3 +889,19 @@ keeper and page the on-call engineer rather than looping.
 a continuous payment streaming primitive for Soroban. The pattern is the point;
 the observation is one data point. Corrections and contradicting data are both
 welcome, and we will amend this note.*
+
+## Recovery procedures (archival and skew)
+
+Pure helpers in `contracts/stream/src/accrual.rs` encode the decisions:
+
+| Situation | Helper | Action |
+|---|---|---|
+| Read ledger behind the ledger of a confirmed write | `classify_read` → `Stale` | Discard the read, re-poll until `latestLedger >= required`; never combine it with another read |
+| `get_stream` fails, id `< next_stream_id` | `recovery_for` → `RestoreFootprint` | Submit `RestoreFootprint` for `DataKey::Stream(id)`, then retry |
+| `get_stream` fails, id `>= next_stream_id` | `recovery_for` → `NeverExisted` | Do not retry; the id was never issued |
+| Retry of a timed-out withdraw | `remaining_to_apply` | Re-read `withdrawn`; if the effect is already applied the remainder is `0` — do not resubmit |
+
+`storage::stream_recovery` applies the same decision on-chain. Tokens are never
+lost on archival; only the accounting entry is unreadable until restored.
+Operators: run `script/archival-canary.sh` and `script/keeper-extend-ttl.sh`
+to keep entries live. Regression pins: `src/test/hardening_177_181_184_190.rs`.

@@ -437,3 +437,38 @@ pub fn delegate_revoked(env: &Env, stream_id: u64, grantor: &Address, delegate: 
     }
     .publish(env);
 }
+
+/// Pre-emission invariant check for a withdrawal: positive amount, and the
+/// cumulative `withdrawn` stays within `deposited` and covers `amount`.
+/// Rejects degenerate state with a deterministic error, never wraps.
+#[allow(dead_code)]
+pub fn check_withdrawn_invariants(stream: &Stream, amount: i128) -> Result<(), crate::error::Error> {
+    use crate::error::Error;
+    if amount <= 0 {
+        return Err(Error::InvalidAmount);
+    }
+    if stream.withdrawn < amount || stream.withdrawn > stream.deposited {
+        return Err(Error::Overflow);
+    }
+    Ok(())
+}
+
+/// Pre-emission invariant check for a cancellation: conservation
+/// `refunded + vested == pre-cancel deposited`, with no wrapping.
+#[allow(dead_code)]
+pub fn check_cancelled_invariants(
+    pre_deposited: i128,
+    refunded: i128,
+    vested: i128,
+    withdrawn: i128,
+) -> Result<(), crate::error::Error> {
+    use crate::error::Error;
+    if refunded < 0 || vested < withdrawn || withdrawn < 0 {
+        return Err(Error::InvalidAmount);
+    }
+    match refunded.checked_add(vested) {
+        Some(sum) if sum == pre_deposited => Ok(()),
+        Some(_) => Err(Error::InvalidAmount),
+        None => Err(Error::Overflow),
+    }
+}

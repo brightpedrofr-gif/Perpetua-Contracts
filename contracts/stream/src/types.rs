@@ -26,6 +26,8 @@ pub mod flag {
     pub const PAUSABLE: u32 = 1 << 1;
     /// Stream recipient may be transferred by the current recipient.
     pub const TRANSFERABLE: u32 = 1 << 2;
+    /// Union of all defined bits; any other bit set is invalid.
+    pub const ALL: u32 = CANCELLABLE | PAUSABLE | TRANSFERABLE;
 }
 
 /// A delegation grant stored in persistent storage.
@@ -121,6 +123,12 @@ impl Stream {
     /// Whether the recipient may transfer its claim to a new recipient.
     pub fn transferable(&self) -> bool {
         self.flags & flag::TRANSFERABLE != 0
+    }
+
+    /// Whether `flags` carries only defined bits.
+    #[allow(dead_code)]
+    pub const fn flags_valid(flags: u32) -> bool {
+        flags & !flag::ALL == 0
     }
 
     /// Build the packed flags integer from the three creation-time booleans.

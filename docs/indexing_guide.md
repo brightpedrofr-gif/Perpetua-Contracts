@@ -776,3 +776,14 @@ Golden fixture: `tests/fixtures/event_snapshots/stream_types.json`, asserted by 
 - `DelegateGrant.ops` is an OR of `WITHDRAW=1, CANCEL=2, PAUSE=4, RESUME=8, TOP_UP=16, TRANSFER_RECIPIENT=32`. Unknown higher bits must be preserved, not rejected.
 - `StreamStatus`: `Active=0, Paused=1, Cancelled=2, Depleted=3`; `Cancelled` and `Depleted` are terminal and `Cancelled` is sticky.
 - Storage key discriminants: `NextStreamId=0, StreamCount=1, Stream(u64)=2, Delegate(u64, Address)=3`.
+
+## Event reconstruction rules (storage parity)
+
+* `DataKey::Stream(id)` state is reconstructed by folding events in ledger order:
+  `stream_created` seeds the record; `withdrawn` sets `withdrawn`; `topped_up`
+  raises `deposited`; `cancelled` sets `deposited = vested`; `paused`/`resumed`
+  set `paused_at`/`paused_total`.
+* A missing entry whose id is below the issued-id count is *archived*, not
+  deleted: restore the footprint before reconciling.
+* Topic layout and field order are frozen by `docs/ABI.md`; fixtures live in
+  `tests/fixtures/event_snapshots/` and are gated by `script/check_snapshot_diff.py`.

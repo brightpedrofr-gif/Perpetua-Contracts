@@ -767,3 +767,12 @@ Indexers should run the same checks in CI:
 A projection is in parity only when both scripts pass. Treat a snapshot diff
 as a schema change: update the ABI, the fixtures, and this guide together, and
 never regenerate a fixture to hide an unexplained diff.
+
+## Stream types and bitmask reconstruction
+
+Golden fixture: `tests/fixtures/event_snapshots/stream_types.json`, asserted by `test::types_schema` against `contracts/stream/src/types.rs`.
+
+- `Stream.flags` (`u32`) is the immutable packed bitmask `CANCELLABLE=1`, `PAUSABLE=2`, `TRANSFERABLE=4`. Indexers derive `cancellable = flags & 1 != 0`, `pausable = flags & 2 != 0`, `transferable = flags & 4 != 0`. The `stream_created` event still carries the three booleans; both views must agree.
+- `DelegateGrant.ops` is an OR of `WITHDRAW=1, CANCEL=2, PAUSE=4, RESUME=8, TOP_UP=16, TRANSFER_RECIPIENT=32`. Unknown higher bits must be preserved, not rejected.
+- `StreamStatus`: `Active=0, Paused=1, Cancelled=2, Depleted=3`; `Cancelled` and `Depleted` are terminal and `Cancelled` is sticky.
+- Storage key discriminants: `NextStreamId=0, StreamCount=1, Stream(u64)=2, Delegate(u64, Address)=3`.

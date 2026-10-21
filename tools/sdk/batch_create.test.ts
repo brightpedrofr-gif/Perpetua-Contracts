@@ -3,6 +3,8 @@ import {
   buildBatchCreateTransaction,
   MAX_BATCH_SIZE,
   parseCsv,
+  submitBatchWithRecovery,
+  type SubmitOutcome,
   type ParsedBatchStream,
 } from "./batch_create.ts";
 
@@ -89,5 +91,85 @@ describe("batch stream creation", () => {
     expect(transaction.operations.map(({ createStream }) => createStream.recipient)).toEqual(
       rows.map(({ recipient }) => recipient),
     );
+  });
+});
+
+describe("buildBatchCreateTransaction option and row errors", () => {
+  it("rejects empty and oversized row sets and bad startTime", () => {
+    expect(() => buildBatchCreateTransaction([], OPTIONS)).toThrow(/No rows/);
+    const many = Array.from({ length: MAX_BATCH_SIZE + 1 }, () => parsedRow());
+    expect(() => buildBatchCreateTransaction(many, OPTIONS)).toThrow(/MAX_BATCH_SIZE/);
+    expect(() => buildBatchCreateTransaction([parsedRow()], { ...OPTIONS, startTime: -1 })).toThrow(/startTime/);
+  });
+
+  it("rejects cliff beyond duration, bad CSV shape, header problems", () => {
+    expect(() => buildBatchCreateTransaction([parsedRow({ cliffDays: 2 })], OPTIONS)).toThrow(/cliff_days/);
+    expect(() => parseCsv("")).toThrow(/header/);
+    expect(() => parseCsv("recipient,amount\nr,1")).toThrow(/Missing required/);
+    expect(() => parseCsv(`${HEADER},amount\n${csvRow()},1`)).toThrow(/duplicate/);
+    expect(() => parseCsv(`${HEADER}\nr,86400,1`)).toThrow(/columns/);
+    expect(() => parseCsv(`${HEADER}\nr,abc,1,0`)).toThrow(/integer/);
+  });
+});
+
+describe("submitBatchWithRecovery", () => {
+  const sleep = async () => {};
+  function deps(outcomes: SubmitOutcome[], counts: Array<[bigint, number]>, restore = async () => {}) {
+    let s = 0;
+    let c = 0;
+    return {
+      submitCalls: () => s,
+      d: {
+        submit: async () => outcomes[s++],
+        readStreamCount: async () => {
+          const [streamCount, ledger] = counts[Math.min(c++, counts.length - 1)];
+          return { streamCount, ledger };
+        },
+        restore,
+        sleep,
+      },
+    };
+  }
+
+  it("succeeds first try", async () => {
+    const { d } = deps([{ status: "SUCCESS" }], [[10n, 1]]);
+    expect(await submitBatchWithRecovery(2, d)).toEqual({ attempts: 1, restored: false, alreadyLanded: false });
+  });
+
+  it("restores archived entries then retries the same tx", async () => {
+    let restores = 0;
+    const { d, submitCalls } = deps([{ status: "ARCHIVED" }, { status: "SUCCESS" }], [[0n, 1]], async () => {
+      restores++;
+    });
+    const r = await submitBatchWithRecovery(1, d);
+    expect(r).toMatchObject({ attempts: 2, restored: true });
+    expect(restores).toBe(1);
+    expect(submitCalls()).toBe(2);
+  });
+
+  it("does not resubmit a timed-out batch that already landed", async () => {
+    const { d, submitCalls } = deps([{ status: "TIMEOUT", ledger: 5 }], [[10n, 1], [10n, 4], [12n, 5]]);
+    const r = await submitBatchWithRecovery(2, d);
+    expect(r.alreadyLanded).toBe(true);
+    expect(submitCalls()).toBe(1);
+  });
+
+  it("resubmits when a timeout did not land", async () => {
+    const { d } = deps([{ status: "TRY_AGAIN_LATER", ledger: 5 }, { status: "SUCCESS" }], [[10n, 1], [10n, 6]]);
+    expect(await submitBatchWithRecovery(2, d)).toMatchObject({ attempts: 2, alreadyLanded: false });
+  });
+
+  it("fails on persistent RPC skew, partial delta, chain failure, exhaustion, bad size", async () => {
+    await expect(
+      submitBatchWithRecovery(1, deps([{ status: "TIMEOUT", ledger: 9 }], [[0n, 1]]).d, { maxSkewReads: 2 }),
+    ).rejects.toThrow(/read skew/);
+    await expect(
+      submitBatchWithRecovery(2, deps([{ status: "TIMEOUT", ledger: 1 }], [[0n, 1], [1n, 2]]).d),
+    ).rejects.toThrow(/delta/);
+    await expect(submitBatchWithRecovery(1, deps([{ status: "FAILED" }], [[0n, 1]]).d)).rejects.toThrow(/failed on chain/);
+    await expect(
+      submitBatchWithRecovery(1, deps([{ status: "ARCHIVED" }, { status: "ARCHIVED" }], [[0n, 1]]).d, { maxAttempts: 2 }),
+    ).rejects.toThrow(/not confirmed/);
+    await expect(submitBatchWithRecovery(0, deps([], [[0n, 1]]).d)).rejects.toThrow(/batchSize/);
   });
 });

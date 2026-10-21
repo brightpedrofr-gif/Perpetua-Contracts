@@ -879,6 +879,10 @@ contract error (not `TRY_AGAIN_LATER`/timeout); a restore transaction reaches
 the entry may be genuinely unrecoverable, and the operator should stop the
 keeper and page the on-call engineer rather than looping.
 
+## Batch creation recovery
+
+`tools/sdk/batch_create.ts` (`submitBatchWithRecovery`) applies these rules to `create_stream` batches: restore archived footprints then retry the same transaction; after a timeout, confirm via `stream_count()` (rejecting reads from a node behind the submit ledger) before any resubmission. Operators: on "RPC read skew" switch RPC node; on "Unexpected stream_count delta" stop and reconcile from `stream_created` events. Full procedure in [batch_create.md](batch_create.md).
+
 ---
 
 *Written while building [Perpetua](https://github.com/hannyloveworld/Perpetua-Contracts),

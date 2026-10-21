@@ -1,0 +1,48 @@
+{
+  "contract": "fluxora_stream",
+  "source": "contracts/stream/src/types.rs",
+  "abi_version": "1.0.0",
+  "op_bits": {
+    "WITHDRAW": 1,
+    "CANCEL": 2,
+    "PAUSE": 4,
+    "RESUME": 8,
+    "TOP_UP": 16,
+    "TRANSFER_RECIPIENT": 32
+  },
+  "flag_bits": {
+    "CANCELLABLE": 1,
+    "PAUSABLE": 2,
+    "TRANSFERABLE": 4
+  },
+  "stream_status": {
+    "Active": 0,
+    "Paused": 1,
+    "Cancelled": 2,
+    "Depleted": 3
+  },
+  "stream_fields": [
+    "sender:Address",
+    "recipient:Address",
+    "token:Address",
+    "deposited:i128",
+    "withdrawn:i128",
+    "start_time:u64",
+    "end_time:u64",
+    "cliff_time:u64",
+    "flags:u32",
+    "paused_at:Option<u64>",
+    "paused_total:u64",
+    "status:StreamStatus"
+  ],
+  "delegate_grant_fields": [
+    "ops:u32",
+    "expires_at:Option<u64>"
+  ],
+  "data_keys": {
+    "NextStreamId": 0,
+    "StreamCount": 1,
+    "Stream": 2,
+    "Delegate": 3
+  }
+}

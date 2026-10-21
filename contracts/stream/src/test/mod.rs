@@ -19,6 +19,7 @@ mod abi;
 
 // Issue #1535 — discriminant fixture and public error-path regression tests.
 mod error_discriminants;
+mod types_schema;
 
 // Stage 1
 mod create;

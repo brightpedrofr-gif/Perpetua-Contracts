@@ -674,6 +674,37 @@ only advances on full commit, and archived entries are flagged rather than
 dropped. There is no scenario in this pipeline where the correct operator
 action is to delete rows and start over.
 
+### Operator runbook: Governance state archival detection & footprint restoration
+
+When governance proposals or multi-sig voting operations fail with entry-not-found or timeout errors:
+
+1. **Detect persistent storage archival.** Run the gas and archival analysis model:
+   ```bash
+   python3 script/governance-gas-model.py --check-archival --proposal-ids 0 1 2 --proposal-count 10
+   ```
+   If entries report `Archived` (meaning `proposal_id < proposal_count` but the persistent storage entry is not live), Soroban state archival has moved the entry to cold storage.
+2. **Execute footprint restoration.** Run the SDK restoration tool targeting the archived persistent keys:
+   ```bash
+   npx ts-node tools/sdk/restore_footprint.ts \
+     --contract <GOVERNANCE_CONTRACT_ID> \
+     --stream-id <PROPOSAL_ID> \
+     --source-secret <OPERATOR_SECRET> \
+     --horizon <HORIZON_URL> \
+     --network-passphrase "<PASSPHRASE>"
+   ```
+3. **Verify restored status.** Re-run `--check-archival` to verify that all proposal entries report `Live`.
+4. **Idempotent replay.** Re-submit the voting or execution transaction. Because proposal IDs are immutable and non-reusable, retrying is strictly idempotent and safe against double-spend or duplicate votes.
+
+### Operator runbook: Distinguishing RPC read skew from true state archival
+
+Before initiating on-chain restoration transactions, verify whether a missing entry is simply due to RPC read skew across distributed nodes:
+
+1. **Sample multiple RPC endpoints:**
+   Query `getLatestLedger()` consecutively across your endpoint pool or perform 3 back-to-back queries.
+2. **Evaluate ledger divergence:**
+   - **If responses disagree on `latestLedger`:** This is read skew, not state archival. A lagging node serving ledger *N-5* will not see an entry created at ledger *N*. Do NOT submit a restore transaction. Wait 2–5 seconds with exponential backoff for the node to catch up.
+   - **If responses agree on `latestLedger`:** All replicas are synchronized at the current network height, and an entry whose ID is lower than the contract's total count reports missing. This is genuine state archival. Proceed with footprint restoration immediately.
+
 ## What this is not
 
 **Not a consensus or data-integrity problem.** Any node serving an older ledger

@@ -349,6 +349,15 @@ When testing terminal operations:
 - `test/pause.rs` - Pause state management
 - `test/withdraw.rs` - Withdrawal and depletion
 - `docs/ABI.md` - Public interface specification
+- `docs/soroban-rpc-read-skew.md` - State archival & read skew mitigation runbook
+
+## State Archival and Ledger Skew Operator Quick Reference
+
+When an operation fails with a missing entry error or timeout:
+1. **Check for Read Skew:** Confirm `latestLedger` across multiple RPC calls. If ledgers disagree, wait 2–5s for replica catchup rather than restoring.
+2. **Detect Archival:** If ledgers agree and `stream_id < stream_count` reports false, the entry has been archived.
+3. **Restore Footprint:** Execute `npx ts-node tools/sdk/restore_footprint.ts --contract <C> --stream-id <ID>`.
+4. **Idempotent Replay:** Re-run the operation once the entry reports Live.
 
 ## Error Reference
 

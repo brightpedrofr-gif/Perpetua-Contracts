@@ -1,6 +1,6 @@
-//! Accrual math.
+//! Accrual math — the stream's pure arithmetic core.
 //!
-//! Every function here is pure: it takes a [`Stream`] and a wall-clock
+//! Every function here is **pure**: it takes a [`Stream`] and a wall-clock
 //! timestamp and returns a number. No `Env`, no storage, no host calls. That
 //! makes the whole vesting model property-testable without a Soroban host, and
 //! it keeps the interesting arithmetic in one auditable place.
@@ -54,6 +54,36 @@
 //! that exists strictly before maturity is therefore part of the sender's
 //! refundable complement and cannot remain stranded after settlement.
 //!
+//! ## Explicit invariant enforcement for adversarial edge cases
+//!
+//! Four edge cases get explicit guards beyond what the type system already
+//! enforces:
+//!
+//! **Zero-duration cliff.** `cliff_time == start_time` is valid (it means "no
+//! cliff") and must not be confused with a post-schedule cliff. The guard in
+//! [`cliff_reached`] treats `stream_time >= cliff_time` as the condition, so a
+//! zero-offset cliff opens immediately at schedule start as documented.
+//!
+//! **`i128::MAX` deposits.** `vested` performs `deposited * elapsed`; at
+//! `deposited = i128::MAX` even `elapsed = 1` would overflow. The
+//! `checked_mul` guard maps this to `Err(Error::Overflow)` — a typed error,
+//! never a host trap. `create_stream` front-loads the same guard, so a stream
+//! in storage cannot overflow `vested` unless an external path bypassed
+//! creation (which is not possible through the public ABI). The guard here is
+//! defence in depth.
+//!
+//! **Same-ledger transitions.** `elapsed(stream, now)` is expressed against the
+//! stream clock rather than wall-clock time, so a pause and resume that land on
+//! the same ledger leave elapsed unchanged. A `cancel` at `now == start_time`
+//! collapses `end_time = start_time`, making `duration = 0`; that is handled
+//! by the zero-duration early return in [`vested`] which returns `deposited`
+//! directly (matching the post-cancel rewrite) and avoids division by zero.
+//!
+//! **Saturating time arithmetic.** All `u64` subtractions in [`stream_time`]
+//! and [`elapsed`] use `saturating_sub` so that a `paused_total` larger than
+//! the current instant, or a wall-clock `now` before `start_time`, clamps to
+//! zero elapsed time rather than wrapping.
+//!
 //! ## Why I3 is the dangerous one
 //!
 //! I2 is the obvious property and is easy to get right. **I3 is the one that
@@ -102,16 +132,77 @@
 //! `test::monotonicity` implements the frozen-clock half across every entry
 //! point and every ordering of them; `test::props` implements the
 //! advancing-clock half over random schedules.
+//!
+//! # Accrual formula
+//!
+//! ```text
+//! elapsed  = clamp(stream_time(now), start_time, end_time) - start_time
+//! vested   = 0                                    if stream_time(now) < cliff_time
+//!          = deposited * elapsed / duration       otherwise   (rounds down, integer division)
+//!          = deposited                            if elapsed >= duration  (exact maturity)
+//!          = deposited                            if duration == 0        (post-cancel instant)
+//! ```
+//!
+//! **Rounding is always down.** Truncating in the recipient's disfavour is
+//! correct: the residue stays in the pool and returns to the sender at
+//! settlement, so the contract can never owe more than it holds.
+//!
+//! **Conservation is exact.** `refundable` is defined as `deposited - vested`,
+//! so `vested + refundable == deposited` is an algebraic identity, never an
+//! approximation. No dust term, no per-interval accumulation error.
+//!
+//! # Error handling
+//!
+//! The only error any function here returns is [`Error::Overflow`], signalling
+//! that a checked arithmetic operation exceeded the `i128` range. Every other
+//! degenerate case (zero duration, clock before start, saturating subtraction)
+//! is handled silently with a well-defined result — never a panic, never an
+//! opaque host trap.
+//!
+//! `create_stream` and `top_up` pre-validate that `deposited * duration` fits
+//! in `i128`, so for any stream that reached persistent storage, [`vested`]
+//! should never return `Err` in practice. The guard is present as defence in
+//! depth against crafted streams or future code paths that might bypass the
+//! creation validation.
 
 use crate::error::Error;
 use crate::types::Stream;
 
-/// The stream's own clock, in the same units and origin as `start_time` and
-/// `end_time`. Stops while the stream is paused.
+/// Map wall-clock time to the stream's own clock.
 ///
-/// Saturates at zero rather than underflowing; a stream whose `paused_total`
-/// exceeds the current instant simply reads as time zero, which clamps to "no
-/// elapsed time" downstream.
+/// The stream clock stops while the stream is paused:
+///
+/// ```text
+/// stream_time(now) = paused_at.unwrap_or(now) - paused_total
+/// ```
+///
+/// While the stream is paused, `paused_at` is `Some(t)` where `t` is the
+/// instant the clock froze. After a resume, `paused_total` has absorbed that
+/// interval, so the clock continues from where it stopped.
+///
+/// # Saturating behaviour
+///
+/// Saturates to zero rather than underflowing. A stream whose `paused_total`
+/// exceeds the freeze instant (which cannot happen through the public ABI, but
+/// is guarded here for defence in depth) simply reads as time zero, which
+/// downstream clamps to "no elapsed time".
+///
+/// # Same-ledger invariant
+///
+/// A pause and resume on the same ledger yield `frozen_at - paused_total ==
+/// frozen_at - 0 == frozen_at`, leaving the stream clock exactly where it was
+/// before the pair. The elapsed time does not change.
+///
+/// # Arguments
+///
+/// * `stream` — The stream whose clock is to be read.
+/// * `now` — The current ledger timestamp in Unix seconds.
+///
+/// # Returns
+///
+/// The stream's clock value at `now`, in the same units and origin as
+/// `start_time` and `end_time`. Always `<= now` (or `<= paused_at` while
+/// paused).
 pub fn stream_time(stream: &Stream, now: u64) -> u64 {
     let frozen_at = match stream.paused_at {
         Some(paused_at) => paused_at,
@@ -120,16 +211,49 @@ pub fn stream_time(stream: &Stream, now: u64) -> u64 {
     frozen_at.saturating_sub(stream.paused_total)
 }
 
-/// Total scheduled duration, in seconds.
+/// Total scheduled duration of the stream, in seconds.
 ///
-/// Guaranteed non-zero at creation ([`Error::InvalidTimeRange`]), but it can
-/// legitimately become zero after a cancel that lands at `start_time` — see
-/// [`vested`] for how that case is handled.
+/// Computed as `end_time - start_time` using saturating arithmetic. This is
+/// the denominator in the linear accrual formula. Guaranteed non-zero at
+/// creation ([`Error::InvalidTimeRange`] rejects `end_time <= start_time`),
+/// but can legitimately become zero after a `cancel` that collapses the
+/// schedule onto `start_time`. [`vested`] handles that zero-duration case
+/// explicitly (returning `deposited` directly) to avoid a division by zero.
+///
+/// # Arguments
+///
+/// * `stream` — The stream whose duration is to be computed.
+///
+/// # Returns
+///
+/// Duration in seconds. Zero only for a post-cancel stream where
+/// `end_time == start_time`.
 pub fn duration(stream: &Stream) -> u64 {
     stream.end_time.saturating_sub(stream.start_time)
 }
 
-/// Seconds of the schedule actually consumed, clamped to `[0, duration]`.
+/// Seconds of the schedule that have been consumed, clamped to `[0, duration]`.
+///
+/// Expresses how far through the linear accrual curve the stream is at `now`.
+/// Uses the stream clock rather than wall-clock time, so pausing freezes this
+/// value.
+///
+/// Clamping to `[0, duration]` means:
+///
+/// * If `stream_time(now) < start_time`, elapsed is 0 — the schedule has not
+///   started yet (backdated streams are valid but deliver nothing before
+///   `start_time`).
+/// * If `stream_time(now) > end_time`, elapsed is `duration` — maturity is an
+///   exact terminal boundary; the schedule does not keep running past it.
+///
+/// # Arguments
+///
+/// * `stream` — The stream whose elapsed time is to be computed.
+/// * `now` — The current ledger timestamp in Unix seconds.
+///
+/// # Returns
+///
+/// Elapsed seconds in `[0, duration(stream)]`.
 pub fn elapsed(stream: &Stream, now: u64) -> u64 {
     let clock = stream_time(stream, now);
     let capped = if clock > stream.end_time {
@@ -140,36 +264,105 @@ pub fn elapsed(stream: &Stream, now: u64) -> u64 {
     capped.saturating_sub(stream.start_time)
 }
 
-/// Whether the cliff gate has opened.
+/// Whether the cliff gate has opened, allowing withdrawals.
 ///
-/// The gate is evaluated against the stream clock, so a stream paused across
-/// its cliff does not silently pass the cliff while frozen.
+/// The gate is evaluated against the **stream clock** (not wall-clock time),
+/// so a stream paused across its cliff does not silently pass the cliff while
+/// frozen. The stream must be explicitly resumed before the cliff opens.
 ///
-/// # Cliff Semantics vs Delayed Start
+/// # Cliff semantics: gate, not delayed start
 ///
-/// A cliff is a payout gate, NOT a delayed start schedule:
-/// - At `now < cliff_time` (e.g. `cliff_time - 1`), the cliff gate is closed
-///   and vested entitlement is strictly zero (`0`).
-/// - At `now == cliff_time`, the gate opens in a single discrete step, immediately
-///   releasing all value accrued continuously since `start_time` (not merely since
-///   `cliff_time`).
-/// - Subsequent to `cliff_time`, accrual continues linearly along the original
-///   schedule rate until `end_time`.
+/// The cliff **gates** the payout; it does not delay the start of accrual:
+///
+/// * At `stream_time(now) < cliff_time` — gate closed; `vested` returns 0.
+/// * At `stream_time(now) == cliff_time` — gate opens in a single discrete
+///   step, immediately releasing all value accrued continuously since
+///   `start_time` (not merely what would have accrued since `cliff_time`).
+/// * After `cliff_time` — accrual continues linearly along the original
+///   schedule until `end_time`.
+///
+/// # Zero-duration cliff (cliff_time == start_time)
+///
+/// When `cliff_time == start_time` there is effectively no cliff: the gate
+/// opens at schedule start and the first second of accrual is immediately
+/// withdrawable. This is the valid "no cliff" configuration and is handled
+/// correctly here: `stream_time >= start_time` is true from the moment the
+/// stream starts, so the cliff is open.
+///
+/// # Arguments
+///
+/// * `stream` — The stream whose cliff is to be checked.
+/// * `now` — The current ledger timestamp in Unix seconds.
+///
+/// # Returns
+///
+/// `true` if the cliff has been reached and withdrawals are permitted.
 pub fn cliff_reached(stream: &Stream, now: u64) -> bool {
     stream_time(stream, now) >= stream.cliff_time
 }
 
-/// Amount vested at `now`: what the recipient has earned in total, ever.
+/// Total amount vested at `now`: what the recipient has earned in total, ever.
 ///
-/// Rounds **down**. Integer division truncating in the recipient's disfavour is
-/// the correct direction: the residue stays in the contract and is returned to
-/// the sender when the stream settles, so the pool can never be short.
+/// This is the primary computation of the accrual engine. It is evaluated from
+/// scratch on every call rather than incrementally, which is why conservation
+/// is exact and truncation error never accumulates.
 ///
-/// Before the cliff this is zero — the cliff *gates* the payout, it does not
-/// delay accrual, so at the cliff instant the recipient becomes entitled to
-/// everything accrued since `start_time`, not since `cliff_time`.
-/// Returns `Err(Error::Overflow)` (aka `Error::ArithmeticOverflow`) if any checked
-/// mathematical operation overflows.
+/// # Formula
+///
+/// ```text
+/// vested = 0                                  if stream_time(now) < cliff_time
+/// vested = deposited                          if duration == 0 (post-cancel instant)
+/// vested = deposited                          if elapsed >= duration (maturity)
+/// vested = deposited * elapsed / duration     otherwise (integer division, rounds down)
+/// ```
+///
+/// # Rounding direction
+///
+/// Rounds **down** (truncates toward zero). Truncating in the recipient's
+/// disfavour is correct: the residue stays in the pool and is returned to the
+/// sender at settlement via [`refundable`], so the pool can never owe more than
+/// it holds.
+///
+/// # Maturity is an exact terminal boundary
+///
+/// When `elapsed >= duration`, this function returns `deposited` directly
+/// rather than evaluating the ratio. This makes the zero-dust consequence
+/// explicit even when `duration` does not divide `deposited` cleanly: at
+/// maturity, every stroop is vested, nothing is refundable, and the pool
+/// balance is exactly zero.
+///
+/// # Zero-duration streams (post-cancel)
+///
+/// `cancel` can collapse the schedule by setting `end_time = start_time`,
+/// making `duration = 0`. In that case `deposited` has already been rewritten
+/// to the amount vested at the cancel instant, so returning it in full is
+/// exactly right — and it avoids a division by zero.
+///
+/// # Overflow guard
+///
+/// The multiplication `deposited * elapsed` is performed with `checked_mul`.
+/// At `deposited = i128::MAX`, even `elapsed = 1` would overflow. Returning
+/// `Err(Error::Overflow)` (equivalently `Err(Error::ArithmeticOverflow)`) is
+/// the correct response — a typed error, never a panic or opaque host trap.
+/// `create_stream` front-loads the same guard so a well-formed stream in
+/// storage cannot trigger this in practice; the guard here is defence in depth.
+///
+/// # Arguments
+///
+/// * `stream` — The stream whose vested amount is to be computed.
+/// * `now` — The current ledger timestamp in Unix seconds.
+///
+/// # Returns
+///
+/// * `Ok(v)` where `0 <= v <= stream.deposited`.
+/// * `Err(Error::Overflow)` if the multiplication overflows `i128`.
+///
+/// # Errors
+///
+/// Returns [`Error::Overflow`] (alias [`Error::ArithmeticOverflow`]) if the
+/// `deposited * elapsed` multiplication exceeds the `i128` range. This only
+/// occurs for streams whose `deposited * duration` product exceeds `i128::MAX`,
+/// which `create_stream` rejects at creation time.
 pub fn vested(stream: &Stream, now: u64) -> Result<i128, Error> {
     if !cliff_reached(stream, now) {
         return Ok(0);
@@ -182,6 +375,9 @@ pub fn vested(stream: &Stream, now: u64) -> Result<i128, Error> {
     // `deposited` has already been rewritten to the amount vested at the
     // cancel, so returning it in full is exactly right — and it avoids a
     // division by zero.
+    //
+    // Edge-case invariant: this also handles the same-ledger transition where
+    // cancel is called at start_time in the same ledger the stream was created.
     if total_duration == 0 {
         return Ok(stream.deposited);
     }
@@ -195,6 +391,11 @@ pub fn vested(stream: &Stream, now: u64) -> Result<i128, Error> {
         return Ok(stream.deposited);
     }
 
+    // Overflow guard for adversarial inputs (e.g. i128::MAX deposits).
+    // `create_stream` validates that `deposited * duration` fits in i128, so
+    // for any well-formed stream in storage this checked_mul succeeds. The
+    // guard is here as defence in depth against streams that bypass creation
+    // validation, and for fuzz/property tests that synthesise extreme values.
     let numerator = stream
         .deposited
         .checked_mul(consumed as i128)
@@ -206,6 +407,9 @@ pub fn vested(stream: &Stream, now: u64) -> Result<i128, Error> {
     // Clamp explicitly rather than trusting the arithmetic. `consumed` is
     // already capped at `total_duration`, so this should be unreachable, but
     // the invariant is load-bearing enough to assert rather than assume.
+    // Returning `deposited` here also ensures I6 (zero-dust at settlement)
+    // holds even on the exact-boundary case where floating-point intuition
+    // might suggest the ratio is strictly less than 1.
     Ok(if raw > stream.deposited {
         stream.deposited
     } else {
@@ -213,11 +417,28 @@ pub fn vested(stream: &Stream, now: u64) -> Result<i128, Error> {
     })
 }
 
-/// Amount the recipient can withdraw right now: vested minus already withdrawn.
+/// Amount the recipient can withdraw right now: `vested(now) - withdrawn`.
 ///
-/// Saturates at zero. `withdrawn` can momentarily exceed `vested` only if a
-/// cancel rewrote the schedule, and even then the cancel path guarantees
-/// `deposited >= withdrawn`, so this is defence in depth.
+/// Saturates at zero rather than returning a negative number. `withdrawn` can
+/// momentarily exceed `vested` only if a `cancel` rewrote the schedule after a
+/// partial withdrawal — and even then `cancel` guarantees
+/// `deposited >= withdrawn`, so this saturation path is defence in depth, not
+/// normal operation.
+///
+/// # Arguments
+///
+/// * `stream` — The stream whose withdrawable amount is to be computed.
+/// * `now` — The current ledger timestamp in Unix seconds.
+///
+/// # Returns
+///
+/// * `Ok(a)` where `a >= 0`.
+/// * `Err(Error::Overflow)` if the underlying [`vested`] call overflows.
+///
+/// # Errors
+///
+/// Propagates [`Error::Overflow`] from [`vested`] if the multiplication
+/// overflows. See [`vested`] for details.
 pub fn withdrawable(stream: &Stream, now: u64) -> Result<i128, Error> {
     let earned = vested(stream, now)?;
     let available = earned
@@ -226,21 +447,74 @@ pub fn withdrawable(stream: &Stream, now: u64) -> Result<i128, Error> {
     Ok(if available < 0 { 0 } else { available })
 }
 
-/// Amount still locked for the recipient's future: deposited minus vested.
+/// Amount still locked for the sender to recover if they cancel now.
 ///
-/// This is what the sender gets back if they cancel at `now`. Because this is
-/// the exact complement of [`vested`], all pre-maturity truncation residue is
-/// accounted for, and it is zero at and after maturity.
+/// Defined as `deposited - vested(now)`, the exact complement of [`vested`].
+/// Because conservation is exact (`vested + refundable == deposited`
+/// algebraically), there is no dust term and no rounding residue.
+///
+/// * Before maturity, truncation residue from integer division is part of
+///   `refundable`, not part of `vested`. This keeps the pool solvent.
+/// * At and after maturity, `refundable` is exactly zero — no dust is ever
+///   stranded in the pool after settlement.
+///
+/// # Arguments
+///
+/// * `stream` — The stream whose refundable amount is to be computed.
+/// * `now` — The current ledger timestamp in Unix seconds.
+///
+/// # Returns
+///
+/// * `Ok(r)` where `r >= 0`.
+/// * `Err(Error::Overflow)` if the underlying [`vested`] call overflows.
+///
+/// # Errors
+///
+/// Propagates [`Error::Overflow`] from [`vested`] if the multiplication
+/// overflows. The `checked_sub` here cannot overflow because `deposited` is
+/// always `>= vested` by construction (I1), but is written as `checked_sub`
+/// as an extra layer of defence.
 pub fn refundable(stream: &Stream, now: u64) -> Result<i128, Error> {
     let earned = vested(stream, now)?;
     stream.deposited.checked_sub(earned).ok_or(Error::Overflow)
 }
 
-/// Outstanding liability of this stream against the pooled contract balance:
-/// everything deposited that has not yet left the contract.
+/// Outstanding liability of this stream against the pooled contract balance.
 ///
-/// The pool invariant is that the contract's token balance is always at least
-/// the sum of this quantity across all live streams.
+/// Defined as `deposited - withdrawn`: the portion of the deposit that has not
+/// yet left the contract via a withdrawal. This quantity must be backed by
+/// actual tokens in the contract's pool at all times.
+///
+/// The pool invariant is:
+/// ```text
+/// sum(liability(s) for all live streams s) <= contract_token_balance
+/// ```
+///
+/// A violation means some stream's claim is unbacked and a recipient cannot be
+/// paid. The test harness asserts this after every operation via
+/// `assert_pool_invariant`.
+///
+/// Note: `liability` can be negative if `withdrawn > deposited`. This is
+/// impossible through the public ABI but is representable by the type; callers
+/// that sum liabilities should check for this. The test suite covers it in
+/// `accrual_overflow.rs`.
+///
+/// # Arguments
+///
+/// * `stream` — The stream whose outstanding liability is to be computed.
+///
+/// # Returns
+///
+/// * `Ok(l)` where normally `0 <= l <= deposited`.
+/// * `Err(Error::Overflow)` if the subtraction overflows (impossible in
+///   practice for streams created through the public ABI).
+///
+/// # Errors
+///
+/// Returns [`Error::Overflow`] if `deposited - withdrawn` overflows `i128`.
+/// This cannot occur through the public ABI because `deposited` and
+/// `withdrawn` are both non-negative and `withdrawn <= deposited` is enforced
+/// by invariant I1.
 pub fn liability(stream: &Stream) -> Result<i128, Error> {
     stream
         .deposited

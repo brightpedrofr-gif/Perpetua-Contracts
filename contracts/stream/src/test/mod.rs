@@ -67,3 +67,18 @@ mod ttl;
 
 // Stage 4
 mod stream_ids;
+
+// Issue 1: Explicit invariant enforcement for edge-case inputs
+// (zero-duration cliffs, i128::MAX deposits, same-ledger transitions).
+// Regression pins for adversarial accrual inputs that the pure property suite
+// and the overflow suite do not jointly cover.
+mod accrual_edge_cases;
+
+// Issue 2: Deterministic parity and snapshot tests for event topic layouts and
+// accrual payload schemas. Guards downstream indexer and SDK ABI stability.
+mod accrual_indexer_parity;
+
+// Issue 3: Performance regression tests — accrual stays within Soroban
+// CPU/memory budgets under batch payroll workloads (MAX_BATCH_SIZE streams,
+// pause/resume history, no super-linear growth).
+mod accrual_budget;

@@ -787,3 +787,10 @@ Golden fixture: `tests/fixtures/event_snapshots/stream_types.json`, asserted by 
   deleted: restore the footprint before reconciling.
 * Topic layout and field order are frozen by `docs/ABI.md`; fixtures live in
   `tests/fixtures/event_snapshots/` and are gated by `script/check_snapshot_diff.py`.
+
+## Error code parity (`tools/sdk/errors.ts`)
+
+Indexers decode `Error(Contract, #N)` with `decodeContractError`. The table is
+frozen against `contracts/stream/src/error.rs` and the golden fixture
+`tests/fixtures/errors/stream_errors.json`; adding a discriminant requires
+updating the Rust enum, `errors.ts`, the fixture, and `docs/ABI.md` together.

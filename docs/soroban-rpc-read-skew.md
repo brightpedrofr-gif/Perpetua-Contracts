@@ -883,6 +883,24 @@ keeper and page the on-call engineer rather than looping.
 
 `tools/sdk/batch_create.ts` (`submitBatchWithRecovery`) applies these rules to `create_stream` batches: restore archived footprints then retry the same transaction; after a timeout, confirm via `stream_count()` (rejecting reads from a node behind the submit ledger) before any resubmission. Operators: on "RPC read skew" switch RPC node; on "Unexpected stream_count delta" stop and reconcile from `stream_created` events. Full procedure in [batch_create.md](batch_create.md).
 
+## Wallet submission recovery (`tools/sdk/wallet.ts`)
+
+`submitWithRecovery(signed, { submit, restore })` resubmits the **same signed
+XDR** on retry, so a timed-out submission that actually landed cannot apply
+twice (the duplicate sequence number is rejected). `classifyWalletFailure`
+maps errors to categories:
+
+| Kind | Meaning | Action |
+|---|---|---|
+| `archived` | persistent entry expired | run `restore()` (RestoreFootprint), back off, resubmit |
+| `read_skew` | RPC node lagging | back off, resubmit |
+| `timeout` | outcome unknown | back off, resubmit same XDR |
+| `rejected` | user declined in wallet | rethrow, never retried |
+| `fatal` | anything else | rethrow, never retried |
+
+Troubleshooting: if `submitWithRecovery` throws after `maxAttempts`, inspect the
+transaction hash on RPC before re-signing; only re-sign if the hash is unknown.
+
 ---
 
 *Written while building [Perpetua](https://github.com/hannyloveworld/Perpetua-Contracts),

@@ -365,3 +365,12 @@ unexpected state mutations.
 | Accrual helpers (`accrual.rs`) | No storage reads or host calls; `Stream` is borrowed, never cloned |
 
 The WASM size gate `script/check-stream-wasm-size.sh` must stay green.
+
+## SDK error decoder (`tools/sdk/errors.ts`)
+
+`parseStreamError` and `decodeContractError` are O(1): a frozen 34-entry table,
+a bounds check against `MAX_STREAM_ERROR_CODE`, and one anchored regex over at
+most `MAX_DIAGNOSTIC_LEN` (512) bytes. No XDR is decoded or cloned and no
+storage or host calls are made, so cost per decode is constant across a batch
+payroll run. `tests/test_sdk_errors_parity.py` pins the table to
+`contracts/stream/src/error.rs`.

@@ -14,6 +14,7 @@ import {
   Asset,
   Contract,
   Keypair,
+  Memo,
   Network,
   Operation,
   Server,
@@ -284,6 +285,73 @@ async function signWithAlbedo(
     xdr: result.xdr,
     hash: result.hash,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Fault recovery: archival, RPC read skew, idempotent retry
+// ---------------------------------------------------------------------------
+
+/** Stable failure categories surfaced by `classifyWalletFailure`. */
+export type WalletFailureKind =
+  | "archived"   // persistent entry expired; RestoreFootprint required
+  | "read_skew"  // RPC node lagging; retry after backoff
+  | "timeout"    // submission outcome unknown; resubmit same signed XDR
+  | "rejected"   // user declined in the wallet; never retried
+  | "fatal";     // anything else; never retried
+
+/** Classify a thrown error or RPC status string into a recovery category. */
+export function classifyWalletFailure(err: unknown): WalletFailureKind {
+  const text = String((err as { message?: string })?.message ?? err ?? "").toLowerCase();
+  if (/user declined|user rejected|rejected by user/.test(text)) return "rejected";
+  if (/archived|expired entry|restore(footprint)? required|entry_archived/.test(text)) return "archived";
+  if (/try_again_later|ledger.*(behind|lag)|stale|not found.*ledger/.test(text)) return "read_skew";
+  if (/timeout|timed out|etimedout/.test(text)) return "timeout";
+  return "fatal";
+}
+
+/** Options for `submitWithRecovery`. */
+export interface SubmitWithRecoveryOptions {
+  /** Submit the signed XDR; must be safe to call repeatedly with the same XDR. */
+  submit: (signedXdr: string) => Promise<string>;
+  /** Called on an archived-entry failure; must submit RestoreFootprint. */
+  restore: () => Promise<void>;
+  /** Max submit attempts (default 3). */
+  maxAttempts?: number;
+  /** Base backoff in ms, multiplied by attempt number (default 1000). */
+  backoffMs?: number;
+  /** Injectable sleep for tests. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Idempotently submit an already-signed transaction.
+ *
+ * The same signed XDR (hence same hash and sequence number) is resubmitted on
+ * every retry, so a timed-out submission that actually landed cannot be
+ * applied twice: the network rejects the duplicate sequence.  Archived entries
+ * trigger `restore()` once per attempt; read skew and timeouts back off.
+ * Rejections and fatal errors are rethrown immediately.
+ */
+export async function submitWithRecovery(
+  signed: SignedTransaction,
+  opts: SubmitWithRecoveryOptions,
+): Promise<string> {
+  const maxAttempts = opts.maxAttempts ?? 3;
+  const backoffMs = opts.backoffMs ?? 1000;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await opts.submit(signed.xdr);
+    } catch (err) {
+      lastErr = err;
+      const kind = classifyWalletFailure(err);
+      if (kind === "rejected" || kind === "fatal" || attempt === maxAttempts) throw err;
+      if (kind === "archived") await opts.restore();
+      await sleep(backoffMs * attempt);
+    }
+  }
+  throw lastErr;
 }
 
 // ---------------------------------------------------------------------------

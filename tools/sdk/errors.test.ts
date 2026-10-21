@@ -43,3 +43,25 @@ describe("isKnownStreamError", () => {
     expect(isKnownStreamError(NaN)).toBe(false);
   });
 });
+
+import {
+  decodeContractError,
+  describeContractError,
+  MAX_STREAM_ERROR_CODE,
+  streamErrorTable,
+} from "./errors";
+
+describe("decodeContractError / bounds", () => {
+  it("extracts discriminants from diagnostics", () => {
+    expect(decodeContractError("HostError: Error(Contract, #14)")).toBe(14);
+    expect(decodeContractError("no error here")).toBeNull();
+    expect(decodeContractError("x".repeat(600))).toBeNull();
+    expect(describeContractError("Error(Contract, #99)")).toBe("Unknown stream error (code 99).");
+  });
+
+  it("table is dense over 1..=MAX and bounds are exact", () => {
+    expect(Object.keys(streamErrorTable()).length).toBe(MAX_STREAM_ERROR_CODE);
+    expect(isKnownStreamError(MAX_STREAM_ERROR_CODE)).toBe(true);
+    expect(isKnownStreamError(MAX_STREAM_ERROR_CODE + 1)).toBe(false);
+  });
+});

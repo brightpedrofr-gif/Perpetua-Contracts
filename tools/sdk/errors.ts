@@ -151,3 +151,71 @@ export function describeContractError(diagnostic: string): string {
 export function streamErrorTable(): Readonly<Record<number, string>> {
   return ERROR_MESSAGES;
 }
+
+/** Recovery action an operator or SDK caller should take for a failure. */
+export type RecoveryAction = "none" | "restore_footprint" | "retry" | "wait_for_ledger" | "escalate";
+
+export interface FailureDiagnosis {
+  action: RecoveryAction;
+  message: string;
+}
+
+/**
+ * Detect a Soroban archived-entry failure from a simulation/RPC error string.
+ * Archived persistent entries require a RestoreFootprint transaction before
+ * the original invocation can be retried.
+ */
+export function isArchivedEntryError(message: string): boolean {
+  return /archived|entry (?:is )?expired|restore.?footprint|ledger entry.*(?:expired|archived)/i.test(message);
+}
+
+/** Transient RPC / submission statuses that are safe to retry idempotently. */
+export function isRetryableFailure(message: string): boolean {
+  return /TRY_AGAIN_LATER|timeout|timed out|ETIMEDOUT|ECONNRESET|503|504|txBadSeq/i.test(message);
+}
+
+/**
+ * RPC read skew: the RPC node's latest ledger lags the ledger the caller has
+ * already observed. Reads from such a node must not be trusted.
+ *
+ * @throws RangeError on non-integer or negative ledger sequences.
+ */
+export function isLedgerSkewed(
+  rpcLatestLedger: number,
+  observedLedger: number,
+  toleranceLedgers = 0,
+): boolean {
+  for (const v of [rpcLatestLedger, observedLedger, toleranceLedgers]) {
+    if (!Number.isSafeInteger(v) || v < 0) {
+      throw new RangeError(`invalid ledger value: ${v}`);
+    }
+  }
+  return rpcLatestLedger + toleranceLedgers < observedLedger;
+}
+
+/**
+ * Classify a failure into a deterministic recovery action.
+ * Order matters: contract errors are never retried, archival precedes retry.
+ */
+export function diagnoseFailure(input: { contractErrorCode?: number; message?: string }): FailureDiagnosis {
+  const { contractErrorCode, message = "" } = input;
+  if (contractErrorCode !== undefined) {
+    return { action: "escalate", message: parseStreamError(contractErrorCode) };
+  }
+  if (isArchivedEntryError(message)) {
+    return { action: "restore_footprint", message: "Archived entry: submit RestoreFootprint, then retry the original invocation." };
+  }
+  if (isRetryableFailure(message)) {
+    return { action: "retry", message: "Transient failure: retry with the same idempotency key." };
+  }
+  return { action: message ? "escalate" : "none", message: message || "No failure." };
+}
+
+/**
+ * Deterministic idempotency key for retrying an invocation. The same
+ * (contract, method, args) always yields the same key so a retry after a
+ * timeout can first check whether the original transaction landed.
+ */
+export function retryKey(contractId: string, method: string, args: readonly (string | number | bigint)[]): string {
+  return [contractId, method, ...args.map((a) => String(a))].join("|");
+}

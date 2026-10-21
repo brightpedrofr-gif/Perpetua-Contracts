@@ -374,3 +374,19 @@ most `MAX_DIAGNOSTIC_LEN` (512) bytes. No XDR is decoded or cloned and no
 storage or host calls are made, so cost per decode is constant across a batch
 payroll run. `tests/test_sdk_errors_parity.py` pins the table to
 `contracts/stream/src/error.rs`.
+
+## `tools/perpetua-cli.ts` budget and invariants
+
+The CLI builders are pure, allocation-bounded, and perform no RPC or host calls: each `build*` function creates a single result object and one `bigint` (no XDR cloning). A benchmark assertion in `tools/perpetua-cli.test.ts` caps 10,000 `buildCreateOperation` calls at 2 s. The CLI adds no WASM bytes, so `script/check-stream-wasm-size.sh` is unaffected.
+
+Enforced invariants (each rejected early with a `CliInvariantError` carrying a deterministic code):
+
+| Input | Rule | Code |
+|---|---|---|
+| `durationDays` | positive safe integer | `InvalidTimeRange` |
+| `cliffDays` | within `[0, durationDays]` | `InvalidCliff` |
+| `amount` | decimal string in `(0, i128::MAX]` | `InvalidDeposit` / `InvalidAmount` |
+| deposit vs duration | `deposit >= duration seconds` | `DepositRateTooLow` |
+| `streamId` | non-negative safe integer | `MalformedStreamId` |
+| `ttlLedgers` | positive safe integer when set | `InvalidTtl` |
+

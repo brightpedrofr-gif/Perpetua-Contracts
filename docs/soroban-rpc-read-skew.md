@@ -901,6 +901,20 @@ maps errors to categories:
 Troubleshooting: if `submitWithRecovery` throws after `maxAttempts`, inspect the
 transaction hash on RPC before re-signing; only re-sign if the hash is unknown.
 
+## SDK recovery helpers (`tools/sdk/errors.ts`)
+
+| Helper | Purpose |
+|---|---|
+| `isArchivedEntryError(msg)` | Detects archived/expired persistent entries in simulation errors. |
+| `isRetryableFailure(msg)` | Detects transient failures (`TRY_AGAIN_LATER`, timeouts, 503/504, `txBadSeq`). |
+| `isLedgerSkewed(rpcLatest, observed, tol)` | True when the RPC node lags a ledger the caller already saw. Throws `RangeError` on invalid input. |
+| `diagnoseFailure({contractErrorCode, message})` | Returns `restore_footprint`, `retry`, `escalate` or `none`. Contract errors are never retried. |
+| `retryKey(contractId, method, args)` | Deterministic idempotency key: before retrying a timed-out call, look up whether the original transaction landed. |
+
+**Recovery runbook.** (1) On `restore_footprint`: submit RestoreFootprint (`restore_footprint.ts`), wait for confirmation, then retry. (2) On `retry`: check the `retryKey` for an already-landed transaction, then resubmit. (3) On skew: re-read from another RPC node or wait until `latestLedger` catches up; never act on a skewed read. (4) On `escalate`: stop and page on-call.
+
+**Troubleshooting.** `Unknown stream error (code N)` means the SDK table is older than the contract; regenerate the SDK. Example: `diagnoseFailure({ message: "entry archived" })` returns `{ action: "restore_footprint", ... }`.
+
 ---
 
 *Written while building [Perpetua](https://github.com/hannyloveworld/Perpetua-Contracts),

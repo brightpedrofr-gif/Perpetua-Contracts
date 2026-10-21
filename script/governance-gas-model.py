@@ -588,6 +588,7 @@ def check_event_budget() -> list[str]:
 
 # ---------------------------------------------------------------------------
 # Archival detection & footprint restoration guidance
+# Idempotent retry & invocation recovery
 # ---------------------------------------------------------------------------
 
 STATE_LIVE = "Live"
@@ -599,6 +600,7 @@ RESTORE_FOOTPRINT_TOOL = "tools/sdk/restore_footprint.ts"
 ERR_OK = "OK"
 ERR_ARCHIVED_ENTRY = "ERR_ARCHIVED_ENTRY"
 ERR_INVALID_INPUT = "ERR_INVALID_INPUT"
+ERR_RETRY_EXHAUSTED = "ERR_RETRY_EXHAUSTED"
 
 
 def detect_archival_state(
@@ -667,6 +669,90 @@ def restoration_guidance(archived_ids: list[int] | tuple[int, ...]) -> dict:
             "3. Re-run --check-archival to verify that all proposal entries report 'Live'.",
             "4. Re-submit the voting or execution transaction. Proposal IDs are immutable, ensuring idempotent retry.",
         ],
+    }
+
+
+def idempotent_retry(
+    proposal_ids: list[int] | tuple[int, ...],
+    pre_state: dict,
+    operation: callable,
+    max_attempts: int = 3,
+) -> dict:
+    """Run ``operation`` retry-safely, keyed on stable proposal ids.
+
+    ``pre_state`` is the mapping returned by archival detection.
+    The operation is only invoked when every proposal id is in ``Live`` state;
+    otherwise the pre-state is returned without invoking mutation.
+    ``operation`` is called as ``operation(proposal_ids)`` and must itself be
+    idempotent.
+
+    Returns ``{"status", "attempts", "result", "pre_state"}``. Never raises.
+    """
+    if not isinstance(proposal_ids, (list, tuple)) or not callable(operation):
+        return {
+            "status": ERR_INVALID_INPUT,
+            "attempts": 0,
+            "result": None,
+            "pre_state": pre_state,
+        }
+    if not isinstance(pre_state, dict) or "states" not in pre_state:
+        return {
+            "status": ERR_INVALID_INPUT,
+            "attempts": 0,
+            "result": None,
+            "pre_state": pre_state,
+        }
+    if not isinstance(max_attempts, int) or max_attempts < 1:
+        return {
+            "status": ERR_INVALID_INPUT,
+            "attempts": 0,
+            "result": None,
+            "pre_state": pre_state,
+        }
+
+    # Verify that all target proposal IDs are live
+    non_live = [
+        pid
+        for pid in proposal_ids
+        if pre_state.get("states", {}).get(pid) != STATE_LIVE
+    ]
+    if non_live:
+        status = (
+            ERR_ARCHIVED_ENTRY
+            if any(
+                pre_state.get("states", {}).get(p) == STATE_ARCHIVED
+                for p in non_live
+            )
+            else ERR_INVALID_INPUT
+        )
+        return {
+            "status": status,
+            "attempts": 0,
+            "result": None,
+            "pre_state": pre_state,
+        }
+
+    attempts = 0
+    last_exc = None
+    for attempt in range(1, max_attempts + 1):
+        attempts = attempt
+        try:
+            res = operation(proposal_ids)
+            return {
+                "status": ERR_OK,
+                "attempts": attempts,
+                "result": res,
+                "pre_state": pre_state,
+            }
+        except Exception as exc:
+            last_exc = str(exc)
+
+    return {
+        "status": ERR_RETRY_EXHAUSTED,
+        "attempts": attempts,
+        "result": None,
+        "error": last_exc,
+        "pre_state": pre_state,
     }
 
 
